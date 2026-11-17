@@ -1,0 +1,44 @@
+{
+  "_note": "SYNTHETIC test data. Fictional clients and numbers, shaped like Zoho Books API v3 records. Edit freely; the server re-reads this file on every call.",
+  "organization": {
+    "organization_id": "60012345678",
+    "name": "Aedium Design (MOCK)",
+    "country": "India",
+    "currency_code": "INR",
+    "time_zone": "Asia/Calcutta",
+    "fiscal_year_start_month": "april",
+    "data_center": "in"
+  },
+  "contacts": [
+    { "contact_id": "C-1001", "contact_name": "Meridian Developers", "company_name": "Meridian Developers Pvt Ltd", "contact_type": "customer", "gst_no": "29AAACM0000A1Z1", "payment_terms": 30, "email": "accounts@meridian.example" },
+    { "contact_id": "C-1002", "contact_name": "Northwind Precision Components", "company_name": "Northwind Precision Components Ltd", "contact_type": "customer", "gst_no": "29AAACN0000B1Z2", "payment_terms": 30, "email": "ap@northwind.example" },
+    { "contact_id": "C-1003", "contact_name": "Lakeview Health", "company_name": "Lakeview Health Pvt Ltd", "contact_type": "customer", "gst_no": "29AAACL0000C1Z3", "payment_terms": 30, "email": "finance@lakeview.example" },
+    { "contact_id": "C-1004", "contact_name": "Greenfield Homes", "company_name": "Greenfield Homes LLP", "contact_type": "customer", "gst_no": "29AAAFG0000D1Z4", "payment_terms": 30, "email": "billing@greenfield.example" },
+    { "contact_id": "C-1005", "contact_name": "Asterbay Realty", "company_name": "Asterbay Realty Pvt Ltd", "contact_type": "customer", "gst_no": "29AAACA0000E1Z5", "payment_terms": 30, "email": "accounts@asterbay.example" }
+  ],
+  "salesorders": [
+    { "salesorder_id": "SO-5001", "salesorder_number": "SO-2526-041", "customer_id": "C-1001", "reference_number": "MDPL/WO/2025/118", "date": "2025-11-12", "status": "open", "total": 37500000, "project_number": "R-2526-041", "project_name": "Meridian Gateway Mixed-Use Tower", "studio": "Arch - Com" },
+    { "salesorder_id": "SO-5002", "salesorder_number": "SO-2627-007", "customer_id": "C-1002", "reference_number": "NPCL/PO/2026/0457", "date": "2026-05-02", "status": "open", "total": 8500000, "project_number": "R-2627-007", "project_name": "Northwind Hosur Plant", "studio": "Arch - Com" },
+    { "salesorder_id": "SO-5003", "salesorder_number": "SO-2526-033", "customer_id": "C-1003", "reference_number": "LHPL-WO-33", "date": "2025-09-20", "status": "open", "total": 2500000, "project_number": "R-2526-033", "project_name": "Lakeview Health Annex", "studio": "Healthcare" },
+    { "salesorder_id": "SO-5004", "salesorder_number": "SO-2526-052", "customer_id": "C-1004", "reference_number": "GH/2026/WO-09", "date": "2026-01-15", "status": "open", "total": 4000000, "project_number": "R-2526-052", "project_name": "Greenfield Row Villas", "studio": "Arch - Resi" },
+    { "salesorder_id": "SO-5005", "salesorder_number": "SO-2627-012", "customer_id": "C-1005", "reference_number": "ARPL/LS/2026/3", "date": "2026-07-01", "status": "open", "total": 1000000, "project_number": "R-2627-012", "project_name": "Asterbay Lake Park", "studio": "Landscape" }
+  ],
+  "invoices": [
+    { "invoice_id": "I-9001", "invoice_number": "INV-CM-2598", "customer_id": "C-1001", "salesorder_id": "SO-5001", "reference_number": "MDPL/WO/2025/118", "date": "2025-12-01", "due_date": "2025-12-31", "total": 4800000, "balance": 0, "line_items": [{ "description": "Arch - Com | Upon confirmation of appointment (10%)", "amount": 4800000 }] },
+    { "invoice_id": "I-9002", "invoice_number": "INV-CM-2611", "customer_id": "C-1001", "salesorder_id": "SO-5001", "reference_number": "MDPL/WO/2025/118", "date": "2026-05-24", "due_date": "2026-06-23", "total": 11500000, "balance": 11500000, "line_items": [{ "description": "Arch - Com | Upon approval of Schematic design (25%)", "amount": 11500000 }] },
+    { "invoice_id": "I-9003", "invoice_number": "INV-CM-2647", "customer_id": "C-1001", "salesorder_id": "SO-5001", "reference_number": "MDPL/WO/2025/118", "date": "2026-03-05", "due_date": "2026-04-04", "total": 1020000, "balance": 1020000, "line_items": [{ "description": "Arch - Com | Construction stage - monthly instalment 1 of 36", "amount": 1020000 }] },
+    { "invoice_id": "I-9004", "invoice_number": "INV-CM-2648", "customer_id": "C-1001", "salesorder_id": "SO-5001", "reference_number": "MDPL/WO/2025/118", "date": "2026-04-08", "due_date": "2026-05-08", "total": 1020000, "balance": 1020000, "line_items": [{ "description": "Arch - Com | Construction stage - monthly instalment 2 of 36", "amount": 1020000 }] },
+    { "invoice_id": "I-9005", "invoice_number": "INV-CM-2650", "customer_id": "C-1001", "salesorder_id": "SO-5001", "reference_number": "MDPL/WO/2025/118", "date": "2026-06-04", "due_date": "2026-07-04", "total": 1020000, "balance": 1020000, "line_items": [{ "description": "Arch - Com | Construction stage - monthly instalment 3 of 36", "amount": 1020000 }] },
+    { "invoice_id": "I-9006", "invoice_number": "INV-CM-2620", "customer_id": "C-1004", "salesorder_id": "SO-5004", "reference_number": "GH/2026/WO-09", "date": "2026-02-10", "due_date": "2026-03-12", "total": 800000, "balance": 0, "line_items": [{ "description": "Arch - Resi | Upon presentation of Concept design (20%)", "amount": 800000 }] },
+    { "invoice_id": "I-9007", "invoice_number": "INV-CM-2655", "customer_id": "C-1002", "salesorder_id": "SO-5002", "reference_number": "NPCL/PO/2026/0457", "date": "2026-07-15", "due_date": "2026-08-14", "total": 1040000, "balance": 0, "line_items": [{ "description": "Arch - Com | Advance on submission of concepts (12.2%)", "amount": 1040000 }] },
+    { "invoice_id": "I-9008", "invoice_number": "INV-CM-2662", "customer_id": "C-1003", "salesorder_id": "SO-5003", "reference_number": "LHPL-WO-33", "date": "2026-07-29", "due_date": "2026-08-28", "total": 640000, "balance": 640000, "line_items": [{ "description": "Healthcare | Upon completion of Design development (25%)", "amount": 640000 }] },
+    { "invoice_id": "I-9009", "invoice_number": "INV-CM-2671", "customer_id": "C-1004", "salesorder_id": "SO-5004", "reference_number": "GH/2026/WO-09", "date": "2026-08-29", "due_date": "2026-09-28", "total": 400000, "balance": 400000, "line_items": [{ "description": "Arch - Resi | Upon approval of Schematic design (10%)", "amount": 400000 }] },
+    { "invoice_id": "I-9010", "invoice_number": "INV-CM-2684", "customer_id": "C-1002", "salesorder_id": "SO-5002", "reference_number": "NPCL/PO/2026/0457", "date": "2026-10-06", "due_date": "2026-11-05", "total": 1250000, "balance": 1250000, "line_items": [{ "description": "Arch - Com | Submission of tender documents (14.7%)", "amount": 1250000 }] },
+    { "invoice_id": "I-9011", "invoice_number": "INV-CM-2689", "customer_id": "C-1005", "salesorder_id": "SO-5005", "reference_number": "ARPL/LS/2026/3", "date": "2026-10-14", "due_date": "2026-11-13", "total": 420000, "balance": 420000, "line_items": [{ "description": "Landscape | Upon presentation of Concept (42%)", "amount": 420000 }] }
+  ],
+  "customerpayments": [
+    { "payment_id": "P-7001", "payment_number": "PMT-0311", "customer_id": "C-1001", "date": "2026-01-20", "payment_mode": "banktransfer", "amount": 4320000, "tax_amount_withheld": 480000, "reference_number": "UTR2601200001", "invoices": [{ "invoice_id": "I-9001", "amount_applied": 4800000 }] },
+    { "payment_id": "P-7002", "payment_number": "PMT-0327", "customer_id": "C-1004", "date": "2026-03-30", "payment_mode": "banktransfer", "amount": 720000, "tax_amount_withheld": 80000, "reference_number": "UTR2603300002", "invoices": [{ "invoice_id": "I-9006", "amount_applied": 800000 }] },
+    { "payment_id": "P-7003", "payment_number": "PMT-0352", "customer_id": "C-1002", "date": "2026-10-10", "payment_mode": "banktransfer", "amount": 936000, "tax_amount_withheld": 104000, "reference_number": "UTR2610100003", "invoices": [{ "invoice_id": "I-9007", "amount_applied": 1040000 }] }
+  ]
+}

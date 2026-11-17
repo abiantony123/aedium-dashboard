@@ -1,0 +1,16 @@
+{
+  "name": "zoho-books-mock-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only mock of a Zoho Books MCP server with synthetic data, for testing the Aedium agents",
+  "type": "module",
+  "bin": { "zoho-books-mock-mcp": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "smoke": "node smoke-test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "3.25.76"
+  }
+}
