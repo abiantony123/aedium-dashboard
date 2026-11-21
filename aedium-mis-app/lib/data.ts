@@ -4,7 +4,7 @@ import { daysBetween } from "./format";
 // ---------- row types (match supabase/migrations) ----------
 export type Line = {
   id: number; row_no: number; sl_no: string | null; financial_year: string | null; project_number: string;
-  client_name: string | null; project_name: string | null; studio: string | null; project_type: string | null;
+  client_name: string | null; project_name: string | null; location: string | null; studio: string | null; project_type: string | null;
   start_date: string | null; end_date: string | null; escalation_clause: string | null;
   split_value: number | null; billed_pct: number | null; billed_amount: number | null;
   yet_to_bill_amount: number | null; design_value: number | null; construction_value: number | null;
@@ -42,9 +42,9 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
   }
 }
 
-export async function loadDashboard(sb: SupabaseClient, studio?: string | null) {
+export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null) {
   const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff] = await Promise.all([
-    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
+    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
     all<OpenInvoice>(sb, "v_open_invoices", "invoice_id,invoice_number,customer_name,project_name,project_number,studio,date,due_date,total,balance,days_overdue,bucket", "invoice_id"),
     all<Invoice>(sb, "zoho_invoices", "invoice_id,invoice_number,salesorder_id,date,total,balance", "invoice_id"),
@@ -61,7 +61,51 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null) 
     runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0,
   };
   const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort();
-  return { ...build(studio ? filterStudio(raw, studio) : raw), studio: studio ?? null, allStudios };
+  const inStudio = studio ? filterStudio(raw, studio) : raw;
+  const clients = clientTree(inStudio.lines);   // client list and tree follow the studio filter, not the client filter
+  const scoped = client ? filterClient(inStudio, client) : inStudio;
+  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, clients };
+}
+
+// One client's slice. Zoho rows follow the project number on their sales order.
+function filterClient(r: Raw, client: string): Raw {
+  const pns = new Set(r.lines.filter((l) => l.client_name === client).map((l) => l.project_number));
+  const soIds = new Set(r.sos.filter((s) => s.project_number && pns.has(s.project_number)).map((s) => s.salesorder_id));
+  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? ""));
+  const invIds = new Set(invoices.map((i) => i.invoice_id));
+  return {
+    ...r,
+    lines: r.lines.filter((l) => l.client_name === client),
+    stages: r.stages.filter((s) => pns.has(s.project_number)),
+    open: r.open.filter((i) => i.project_number && pns.has(i.project_number)),
+    invoices, sos: r.sos.filter((s) => soIds.has(s.salesorder_id)),
+    payments: r.payments.filter((p) => p.invoices?.some((x) => invIds.has(x.invoice_id))),
+  };
+}
+
+// Client -> project -> studio lines, active lines only. Value is the sum of each studio's own split
+// (never the repeated project total), so a combined PO is not counted once per studio.
+export type ClientNode = {
+  client: string; contract: number; billed: number; yetToBill: number; lines: number;
+  projects: { project_number: string; name: string | null; location: string | null; type: string | null; contract: number; billed: number; yetToBill: number;
+    studios: { studio: string | null; value: number; billedPct: number | null; stage: string | null }[] }[];
+};
+export function clientTree(lines: Line[]): ClientNode[] {
+  const byClient = new Map<string, Map<string, Line[]>>();
+  for (const l of lines.filter(isActive)) {
+    const c = l.client_name?.trim() || "Unassigned";
+    const projects = byClient.get(c) ?? new Map<string, Line[]>(); byClient.set(c, projects);
+    projects.set(l.project_number, [...(projects.get(l.project_number) ?? []), l]);
+  }
+  const n = (v: number | null | undefined) => Number(v) || 0;
+  return [...byClient.entries()].map(([client, projects]) => {
+    const ps = [...projects.entries()].map(([project_number, ls]) => ({
+      project_number, name: ls[0].project_name, location: ls[0].location, type: ls[0].project_type,
+      contract: ls.reduce((a, l) => a + n(l.split_value), 0), billed: ls.reduce((a, l) => a + n(l.billed_amount), 0), yetToBill: ls.reduce((a, l) => a + n(l.yet_to_bill_amount), 0),
+      studios: ls.map((l) => ({ studio: l.studio, value: n(l.split_value), billedPct: l.billed_pct, stage: l.project_stage })),
+    })).sort((a, b) => b.contract - a.contract);
+    return { client, contract: ps.reduce((a, p) => a + p.contract, 0), billed: ps.reduce((a, p) => a + p.billed, 0), yetToBill: ps.reduce((a, p) => a + p.yetToBill, 0), lines: ps.reduce((a, p) => a + p.studios.length, 0), projects: ps };
+  }).sort((a, b) => b.contract - a.contract);
 }
 
 // One studio's slice: tracker rows by studio, Zoho rows through their sales order's studio.

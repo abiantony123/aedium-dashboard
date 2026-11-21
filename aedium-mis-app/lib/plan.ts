@@ -11,19 +11,20 @@ const isInstalment = (s: { stage: string | null }) => /instal|monthly|constructi
 
 type PlanLine = Pick<Line, "project_number" | "studio" | "client_name" | "end_date" | "escalation_clause" | "yet_to_bill_amount" | "split_value" | "status" | "row_no" | "project_name" | "start_date" | "billed_amount" | "id" | "sl_no" | "financial_year" | "billed_pct" | "design_value" | "construction_value" | "project_type" | "project_stage" | "spoc">;
 
-async function base(sb: Db, studio: string | null) {
+async function base(sb: Db, studio: string | null, client: string | null = null) {
   const [lines, stages] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
   ]);
-  const L = studio ? lines.filter((l) => l.studio === studio) : lines;
-  const S = studio ? stages.filter((s) => s.studio === studio) : stages;
+  const pns = client ? new Set(lines.filter((l) => l.client_name === client).map((l) => l.project_number)) : null;
+  const L = lines.filter((l) => (!studio || l.studio === studio) && (!pns || pns.has(l.project_number)));
+  const S = stages.filter((s) => (!studio || s.studio === studio) && (!pns || pns.has(s.project_number)));
   return { lines: L as PlanLine[], stages: S };
 }
 
-export async function fyPlan(sb: Db, studio: string | null) {
+export async function fyPlan(sb: Db, studio: string | null, client: string | null = null) {
   const today = IST(), fy = fyOf(today);
-  const { lines, stages } = await base(sb, studio);
+  const { lines, stages } = await base(sb, studio, client);
   const active = lines.filter((l) => isActive(l as Line));
   const key = (pn: string, st: string | null) => `${pn}|${st ?? ""}`;
   const activeKeys = new Set(active.map((l) => key(l.project_number, l.studio)));
@@ -74,8 +75,8 @@ export function escalationOf(l: Pick<Line, "end_date" | "escalation_clause" | "y
   return { rate: rate / 100, days_past_end: daysPast, periods, yet_to_bill: ytb, uplift: periods ? Math.round(ytb * (Math.pow(1 + rate / 100, periods) - 1)) : 0, next_step_up: periods ? null : l.end_date };
 }
 
-export async function escalations(sb: Db, studio: string | null) {
-  const { lines } = await base(sb, studio);
+export async function escalations(sb: Db, studio: string | null, client: string | null = null) {
+  const { lines } = await base(sb, studio, client);
   const today = IST();
   return lines.filter((l) => isActive(l as Line)).map((l) => ({ l, e: escalationOf(l, today) }))
     .filter((x) => x.e && (x.e.periods > 0 || x.e.days_past_end > -90))
@@ -93,14 +94,15 @@ export async function setTarget(sb: Db, actor: Actor, fy: string, studio: string
 export type ProjRow = { id: number; month: string; week: number; project_number: string | null; studio: string | null; stage_seq: number | null; description: string; amount: number; kind: string; created_by: string | null };
 const weekOf = (d: string) => Math.min(5, Math.ceil(Number(d.slice(8, 10)) / 7));
 
-export async function projection(sb: Db, month: string, studio: string | null) {
+export async function projection(sb: Db, month: string, studio: string | null, client: string | null = null) {
   const m = month.slice(0, 7), prev = addMonths(m, -1);
   const [{ data: cur }, { data: prv }, { stages, lines }] = await Promise.all([
     sb.from("projections").select("*").eq("month", `${m}-01`).order("week").order("id"),
     sb.from("projections").select("*").eq("month", `${prev}-01`),
-    base(sb, studio),
+    base(sb, studio, client),
   ]);
-  const inStudio = (r: { studio: string | null }) => !studio || r.studio === studio;
+  const clientPns = client ? new Set(lines.map((l) => l.project_number)) : null;
+  const inStudio = (r: { studio: string | null; project_number?: string | null }) => (!studio || r.studio === studio) && (!clientPns || (!!r.project_number && clientPns.has(r.project_number)));
   const rows = ((cur ?? []) as ProjRow[]).filter(inStudio);
   const sk = (pn: string | null, st: string | null, seq: number | null) => `${pn}|${st ?? ""}|${seq ?? ""}`;
   const stageBy = new Map(stages.map((s) => [sk(s.project_number, s.studio, s.seq), s]));

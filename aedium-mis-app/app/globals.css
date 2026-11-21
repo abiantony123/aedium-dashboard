@@ -566,3 +566,21 @@ dialog.sheet{max-height:calc(100vh - 48px);overflow:auto}
   .po-stages>div{grid-template-columns:1fr auto;} .po-stages>div span:nth-child(2){grid-column:1/-1}
   .tools .xls{display:none}
 }
+/* ---------- client -> project tree (Cash) ---------- */
+.ctree{margin-top:18px;padding:24px 28px}
+.ctree .ahead{margin-bottom:10px}
+.cnode{border-top:1px solid #2A2A30}
+.cnode summary{display:grid;grid-template-columns:minmax(120px,1.4fr) 1.2fr auto minmax(150px,1.2fr);gap:14px;align-items:baseline;padding:13px 4px;cursor:pointer;list-style:none}
+.cnode summary::-webkit-details-marker{display:none}
+.cnode summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--muted)}
+.cnode[open] summary::before{content:"▾"}
+.cnode{position:relative;padding-left:14px}
+.cmeta{color:var(--muted);font-size:13.5px}
+.cproj{padding:4px 0 16px;display:grid;gap:10px}
+.cproj>.pill{justify-self:start;height:34px;font-size:13.5px}
+.cproj .prow{display:grid;grid-template-columns:minmax(160px,1.6fr) auto 2fr;gap:14px;align-items:center;background:var(--raised);border-radius:14px;padding:12px 16px}
+.cproj .pname{display:flex;flex-direction:column;gap:3px}
+.cproj .pname span,.cproj .pval small{color:var(--muted);font-size:13px}
+.cproj .pval{display:flex;flex-direction:column;align-items:flex-end}
+.cproj .pstud{display:flex;flex-wrap:wrap;gap:6px}
+@media (max-width:760px){ .ctree{padding:20px 16px} .cnode summary{grid-template-columns:1fr auto} .cproj .prow{grid-template-columns:1fr auto} .cproj .pstud{grid-column:1/-1} }

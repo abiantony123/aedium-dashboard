@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { Dash } from "@/lib/data";
+import type { Dash, ClientNode } from "@/lib/data";
 import { inr, monthLabel, shortMonth, niceDate, timeOf, greeting } from "@/lib/format";
 import { markStage, decide, signOut, getDraft } from "./actions";
 import Ask from "./ask";
@@ -24,7 +24,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 type Draft = { to: string; subject: string; body: string };
 type Props = {
-  data: Dash & { studio: string | null; allStudios: string[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
+  data: Dash & { studio: string | null; allStudios: string[]; client: string | null; clients: ClientNode[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
   origin: string; keys: KeyInfo[]; runs: Run[]; setupError: string | null; findings: Finding[]; ruleText: NarrativeT;
   plan: Awaited<ReturnType<typeof fyPlan>> | null; escalations: Awaited<ReturnType<typeof escalations>>; projection: Awaited<ReturnType<typeof projection>> | null; month: string;
   financeQueue: Awaited<ReturnType<typeof financeQueue>>; pos: Awaited<ReturnType<typeof listPos>>;
@@ -43,13 +43,14 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   useEffect(() => {
     let live = true;
     setIns((x) => ({ ...x, loading: true }));
-    fetch(`/api/insights${d.studio ? `?studio=${encodeURIComponent(d.studio)}` : ""}`)
+    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client);
+    fetch(`/api/insights${qs.size ? `?${qs}` : ""}`)
       .then((r) => r.json())
       .then((j) => { if (live) setIns({ narrative: j.narrative ?? ruleText, source: j.source ?? "rules", generated_at: j.generated_at ?? null, loading: false }); })
       .catch(() => { if (live) setIns({ narrative: ruleText, source: "rules", generated_at: null, loading: false }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey, d.studio]);
+  }, [findingsKey, d.studio, d.client]);
   const text = ins.narrative;
   const [tab, setTab] = useState<Tab>("brief");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -84,6 +85,21 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     if (s) u.searchParams.set("studio", s); else u.searchParams.delete("studio");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
+  const setClient = (c: string) => {
+    const u = new URL(location.href);
+    if (c) u.searchParams.set("client", c); else u.searchParams.delete("client");
+    start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+  };
+  const clientPick = (
+    <label className="pill studio-pick">
+      <span className="sr">Client</span>
+      <select aria-label="Client" value={d.client ?? ""} onChange={(e) => setClient(e.target.value)}>
+        <option value="">All clients</option>
+        {d.clients.map((c) => <option key={c.client} value={c.client}>{c.client}</option>)}
+        {d.client && !d.clients.some((c) => c.client === d.client) && <option value={d.client}>{d.client}</option>}
+      </select>
+    </label>
+  );
   const studioPick = role === "project_manager" && roleStudio ? <span className="pill">{roleStudio}</span> : (
     <label className="pill studio-pick">
       <span className="sr">Studio</span>
@@ -184,10 +200,10 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= CASH ================= */}
       <main className="screen hero" hidden={tab !== "cash" || !show("cash")}>
-        <div className="eyebrow">Stage-to-cash · {month}{d.studio ? ` · ${d.studio}` : ""}</div>
+        <div className="eyebrow">Stage-to-cash · {month}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}</div>
         <div className="b-head">
           <h1>Every rupee, <em>from sign-off to bank.</em></h1>
-          <div className="acts">{studioPick}{can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}</div>
+          <div className="acts">{clientPick}{studioPick}{can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}</div>
         </div>
         <div className="b-kpis num">
           <div><label>Contract value</label><div className="kpill">{inr(k.contract)}</div></div>
@@ -248,6 +264,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             </section>
           </div>
         </div>
+        <ClientTree clients={d.clients} selected={d.client} onPick={setClient} />
       </main>
 
       {/* ================= PLAN ================= */}
@@ -424,6 +441,36 @@ function Buttons({ primary, allowed, pending, onPrimary, onDismiss, onEdit }: { 
 }
 function Empty({ agent, tone, text }: { agent: string; tone: string; text: string }) {
   return <article className="acard"><div className="dmeta"><span className={`tag ${tone}`} style={tone ? undefined : { color: "var(--fg)" }}>{agent}</span><span>Clear</span></div><h3>Nothing to approve</h3><p>{text}</p></article>;
+}
+
+function ClientTree({ clients, selected, onPick }: { clients: ClientNode[]; selected: string | null; onPick: (c: string) => void }) {
+  return (
+    <section className="card ctree">
+      <div className="ahead"><h2>Clients and projects</h2><small>{plural(clients.length, "client")} · active lines only · studio value never double counted</small></div>
+      {clients.length === 0 && <p className="note">No active projects.</p>}
+      {clients.map((c) => (
+        <details key={c.client} open={c.client === selected} className="cnode">
+          <summary>
+            <b>{c.client}</b>
+            <span className="cmeta">{plural(c.projects.length, "project")} · {plural(c.lines, "studio line")}</span>
+            <span className="num">{inr(c.contract)}</span>
+            <span className="cmeta num">{c.contract ? Math.round((c.billed / c.contract) * 100) : 0}% billed · {inr(c.yetToBill)} to bill</span>
+          </summary>
+          <div className="cproj">
+            {c.client !== selected && <button className="pill" onClick={() => onPick(c.client)}>Filter dashboard to {c.client}</button>}
+            {c.client === selected && <button className="pill" onClick={() => onPick("")}>Clear client filter</button>}
+            {c.projects.map((p) => (
+              <div className="prow" key={p.project_number}>
+                <div className="pname"><b>{p.name ?? p.project_number}</b><span>{[p.location, p.type, p.project_number.trim()].filter(Boolean).join(" · ")}</span></div>
+                <div className="num pval">{inr(p.contract)}<small>{inr(p.yetToBill)} to bill</small></div>
+                <div className="pstud">{p.studios.map((s, i) => <span className="tag t-grey" key={i} title={s.stage ?? undefined}>{s.studio ?? "—"} · {inr(s.value)}</span>)}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+      ))}
+    </section>
+  );
 }
 
 function Ageing({ open }: { open: Dash["open"] }) {
