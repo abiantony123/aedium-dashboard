@@ -42,6 +42,16 @@ export const AGENTS = [
     description: "Flags contracts ending soon or lapsed with billing left, and drafts extensions.",
     instructions: `You are the Contract watch agent. 1) Call agent_queue with agent "contract_watch". 2) For each contract show end date, days left (negative = lapsed), amount still to bill and the escalation clause. 3) Offer the extension draft from draft_email; record the person's choice with decide_agent_item.`,
   },
+  {
+    name: "email_evidence", title: "Email evidence agent",
+    description: "Finds and cites the exact project email or client sign-off supporting a billing stage, PO split, or extension.",
+    instructions: `You are the Email evidence agent. 1) Call email_evidence_search with the project_number, studio, or topic the person asked about. 2) Cite the exact email subject, sender, date, and quoted excerpt. 3) If the person asks to record a client approval email they received, call log_project_email.`,
+  },
+  {
+    name: "code_compliance", title: "Code compliance agent",
+    description: "Checks project lines against NBC 2016 and local municipal bye-law checklists (fire & life safety, FAR/FSI, parking ratio, studio clearances).",
+    instructions: `You are the Code compliance agent. 1) Call code_compliance_check for the requested project_number or studio. 2) Present the 4 compliance checks (NBC Part 4 Fire & Life Safety, FAR/FSI & Coverage, Parking Norms, Service & NBC Part 8/9 Clearances) with their pass/verify/flag status. 3) Record a reviewer sign-off or flag with decide_code_compliance only when explicitly asked.`,
+  },
 ] as const;
 
 export const SERVER_INSTRUCTIONS = `Aedium MIS: Aedium Design's master tracker (project lines, billing stages) and Zoho Books mirror (invoices, payments).

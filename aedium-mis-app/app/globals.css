@@ -142,7 +142,7 @@ h2{font-size:21px;font-weight:400;margin:0;letter-spacing:-.005em}
 .acard{background:var(--raised);border-radius:22px;padding:18px 18px 18px}
 .acard h3{font-size:18.5px;font-weight:500;margin:14px 0 0}
 .acard p{font-size:14.5px;color:var(--muted);margin:10px 0 0;line-height:1.45}
-.ev{background:var(--bg);border-radius:13px;height:39px;display:flex;align-items:center;padding:0 14px;font-size:13.5px;margin-top:14px}
+.ev{background:var(--bg);border-radius:13px;min-height:39px;display:flex;align-items:center;padding:8px 14px;font-size:13.5px;line-height:1.35;margin-top:14px}
 .abtns{display:flex;gap:8px;margin-top:11px}
 .abtns .pill{height:44px}
 .abtns .pill.solid{flex:1}
@@ -158,9 +158,9 @@ h2{font-size:21px;font-weight:400;margin:0;letter-spacing:-.005em}
 .grow{background:#fff;color:var(--blue);border-radius:999px;height:46px;display:flex;justify-content:space-between;align-items:center;padding:0 16px;font-size:15px;margin-top:10px}
 .grow b{font-weight:600}
 .done{padding:26px 24px 20px}
-.lrow{display:flex;gap:24px;border-top:1px solid var(--raised);height:37px;align-items:center;font-size:14.5px}
+.lrow{display:flex;gap:18px;border-top:1px solid var(--raised);min-height:37px;padding:8px 0;align-items:baseline;font-size:14px;line-height:1.4}
 .lrow:first-of-type{margin-top:12px}
-.lrow span{color:var(--muted);width:38px}
+.lrow span{color:var(--muted);width:42px;flex:none}
 
 /* ---------- D · Ask ---------- */
 .askhero{margin-top:25px;padding:44px 32px 36px;text-align:center;border-radius:28px}
@@ -632,3 +632,21 @@ dialog.sheet{max-height:calc(100vh - 48px);overflow:auto}
 .m-log{margin-top:18px;border-top:1px solid var(--raised);padding-top:16px;display:grid;gap:10px}
 .m-log h3{margin:0;font-size:15px;font-weight:500}
 .m-outbox{margin-top:24px;padding:24px}
+/* ---------- Audit log, Connect AI live runner & catalog, compliance modal ---------- */
+.audit-card{margin-top:22px;padding:24px;display:grid;gap:14px}
+.audit-scroll{max-height:460px}
+.audit-scroll table{width:100%;min-width:860px}
+.audit-scroll td,.audit-scroll th{white-space:normal;max-width:340px;vertical-align:top}
+.audit-sub{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.k-test{display:grid;gap:12px}
+.k-test-form{display:grid;gap:8px;margin-top:4px}
+.k-test-form .pill{justify-self:start}
+.k-test-out{display:grid;gap:6px;margin-top:6px}
+.k-catalog{margin-top:22px;padding:24px;display:grid;gap:14px}
+.k-cat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.k-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.k-tools code{font-size:12px;background:var(--bg);border:1px solid #2A2A30;border-radius:8px;padding:3px 8px;color:var(--muted)}
+.comp-item{border-top:1px solid var(--raised);padding-top:14px;margin-top:14px;display:grid;gap:8px}
+.comp-checks{display:grid;gap:2px}
+@media (max-width:1100px){ .k-cat-grid{grid-template-columns:1fr 1fr} }
+@media (max-width:760px){ .k-cat-grid{grid-template-columns:1fr} }

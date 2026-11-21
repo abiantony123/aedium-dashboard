@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { ClientNode, Dash } from "@/lib/data";
 import { inr, niceDate, timeOf } from "@/lib/format";
 import type { AgentName } from "@/lib/agents/actions";
+import { logEmailAction } from "./actions";
 
 type Note = { id: number; title: string; body: string | null; tab: string | null; created_at: string; read_at: string | null };
 type ThreadMsg = { id: string; tag: string; tone: string; from: string; to: string; subject: string; date: string; body: string };
@@ -181,7 +182,7 @@ export default function MailTab({
                   setLogged((prev) => ({ ...prev, [selected.project_number]: [...(prev[selected.project_number] ?? []), entry] }));
                   setReplySub("");
                   setReplyBody("");
-                  toast?.("Client email logged to project thread (Outlook mock)");
+                  void logEmailAction({ project_number: selected.project_number, subject: sub, body, from: entry.from }).then((r) => toast?.(r.message));
                 }}>
                   <h3>Log client email / reply</h3>
                   <input className="field" aria-label="Email subject" placeholder={`Subject (optional, e.g. Re: ${selected.project_number} approval)`} value={replySub} onChange={(e) => setReplySub(e.target.value)} />

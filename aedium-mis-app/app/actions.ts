@@ -3,11 +3,13 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { supabaseServer, dataClient, demoMode, PASS_COOKIE, ROLE_COOKIE } from "@/lib/supabase/server";
 import { recordStageEvent, recordDecision, draftEmail, type Actor, type AgentName } from "@/lib/agents/actions";
-import { createKey, revokeKey } from "@/lib/agents/keys";
-import { assertCan } from "@/lib/rbac";
+import { agentForTool, createKey, logRun, logUiAction, revokeKey, serviceDb } from "@/lib/agents/keys";
+import { runTool, toolsFor, type Scope } from "@/lib/agents/tools";
+import { assertCan, isRole } from "@/lib/rbac";
 import { reviewPo, getPo, excelRows, stagePo } from "@/lib/po";
 import { setTarget, addProjection, deleteProjection, autofillProjection, setConstruction, escalationDraft, decideEscalation } from "@/lib/plan";
 import { raiseInvoice as raiseInv, recordPayment as recordPay, markNotificationsRead } from "@/lib/finance";
+import { decideCodeCompliance, logProjectEmail } from "@/lib/compliance";
 
 type Result = { ok: true; message: string } | { ok: false; message: string };
 
@@ -25,6 +27,7 @@ export async function markStage(input: { project_number: string; studio: string 
   try {
     const { sb, actor } = await me();
     await recordStageEvent(sb, actor, { project_number: input.project_number, studio: input.studio, seq: input.seq }, input.event, input.note);
+    await logUiAction(actor, "mark_stage", input);
     return done({ complete: "Stage marked complete", client_approved: "Client approval recorded", finance_notified: "Sent to Finance" }[input.event]);
   } catch (e) { return fail(e); }
 }
@@ -32,6 +35,7 @@ export async function decide(input: { agent: AgentName; ref: string; decision: "
   try {
     const { sb, actor } = await me();
     await recordDecision(sb, actor, input.agent, input.ref, input.decision);
+    await logUiAction(actor, "decide_agent_item", input);
     if (input.decision === "dismissed") return done("Dismissed");
     return done({ collections: "Approved. Send the reminder from your mailbox.", invoice_trigger: "Sent to Finance's queue", contract_watch: "Approved. Start the extension with the client." }[input.agent]);
   } catch (e) { return fail(e); }
@@ -39,6 +43,24 @@ export async function decide(input: { agent: AgentName; ref: string; decision: "
 export async function getDraft(input: { agent: AgentName; ref: string }) {
   try { const { sb } = await me(); return { ok: true as const, draft: await draftEmail(sb, input.agent, input.ref) }; }
   catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "No draft." }; }
+}
+
+// ---- compliance & mail evidence ----
+export async function runComplianceDecision(input: { row_no: number; decision: "approved" | "dismissed"; note?: string }): Promise<Result> {
+  try {
+    const { sb, actor } = await me();
+    await decideCodeCompliance(sb, actor, input.row_no, input.decision, input.note);
+    await logUiAction(actor, "decide_code_compliance", input);
+    return done(input.decision === "approved" ? "Code compliance verified and logged" : "Code compliance flagged for follow-up");
+  } catch (e) { return fail(e); }
+}
+export async function logEmailAction(input: { project_number: string; subject: string; body: string; from?: string }): Promise<Result> {
+  try {
+    const { sb, actor } = await me();
+    await logProjectEmail(sb, actor, input);
+    await logUiAction(actor, "log_project_email", input);
+    return done("Client email logged to project thread (Outlook mock)");
+  } catch (e) { return fail(e); }
 }
 
 // ---- PO review ----
@@ -50,6 +72,7 @@ export async function reviewPoAction(input: { id: number; decision: "approved" |
   try {
     const { sb, actor } = await me();
     const r = await reviewPo(sb, actor, input.id, input.decision, input.note, input.project_number);
+    await logUiAction(actor, "review_po", { ...input, po_id: input.id, project_number: "project_number" in r ? r.project_number : input.project_number });
     return done(r.status === "approved" ? `Approved into the tracker as ${"project_number" in r ? r.project_number : ""}` : "Rejected");
   } catch (e) { return fail(e); }
 }
@@ -73,6 +96,7 @@ export async function stageSamplePo(mode: "new" | "amendment" | "reset"): Promis
         await sb.from("purchase_orders").update({ parent_id: null }).in("id", ids);
         await sb.from("purchase_orders").delete().in("id", ids);
       }
+      await logUiAction(actor, "sample_po", { mode });
       return done("Sample PO reset");
     }
     const landscapeTotal = mode === "amendment" ? 500000 : 400000;
@@ -104,6 +128,7 @@ export async function stageSamplePo(mode: "new" | "amendment" | "reset"): Promis
       ],
       stages: [...baseStages("Arch - Com", 24), ...baseStages("Landscape", 36)],
     });
+    await logUiAction(actor, "sample_po", { mode, po_number: r.po_number, version: r.version });
     return done(`${r.po_number} v${r.version} (${r.kind}) staged for review`);
   } catch (e) { return fail(e); }
 }
@@ -113,49 +138,135 @@ export async function getEscalationDraft(rowNo: number) {
   catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "No draft." }; }
 }
 export async function setEscalation(input: { row_no: number; decision: "approved" | "dismissed" }): Promise<Result> {
-  try { const { sb, actor } = await me(); await decideEscalation(sb, actor, input.row_no, input.decision); return done(input.decision === "approved" ? "Escalation proposed. Send the notice from your mailbox." : "Escalation dismissed"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    await decideEscalation(sb, actor, input.row_no, input.decision);
+    await logUiAction(actor, "decide_escalation", input);
+    return done(input.decision === "approved" ? "Escalation proposed. Send the notice from your mailbox." : "Escalation dismissed");
+  } catch (e) { return fail(e); }
 }
 
 // ---- plan ----
 export async function saveTarget(input: { fy: string; studio: string; target: number }): Promise<Result> {
-  try { const { sb, actor } = await me(); await setTarget(sb, actor, input.fy, input.studio, input.target); return done("Target saved"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    await setTarget(sb, actor, input.fy, input.studio, input.target);
+    await logUiAction(actor, "set_fy_target", input);
+    return done("Target saved");
+  } catch (e) { return fail(e); }
 }
 export async function saveConstruction(input: { project_number: string; studio: string | null; start: string; months: number | null }): Promise<Result> {
-  try { const { sb, actor } = await me(); await setConstruction(sb, actor, input); return done("Construction start saved"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    await setConstruction(sb, actor, input);
+    await logUiAction(actor, "set_construction_schedule", input);
+    return done("Construction start saved");
+  } catch (e) { return fail(e); }
 }
 export async function addForecast(input: { month: string; week: number; amount: number; description: string; project_number?: string | null; studio?: string | null; stage_seq?: number | null }): Promise<Result> {
-  try { const { sb, actor } = await me(); await addProjection(sb, actor, input); return done("Forecast added"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    await addProjection(sb, actor, input);
+    await logUiAction(actor, "add_projection", input);
+    return done("Forecast added");
+  } catch (e) { return fail(e); }
 }
 export async function removeForecast(id: number): Promise<Result> {
-  try { const { sb, actor } = await me(); await deleteProjection(sb, actor, id); return done("Removed"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    await deleteProjection(sb, actor, id);
+    await logUiAction(actor, "delete_projection", { id });
+    return done("Removed");
+  } catch (e) { return fail(e); }
 }
 export async function autofillForecast(input: { month: string; studio: string | null }): Promise<Result> {
-  try { const { sb, actor } = await me(); const r = await autofillProjection(sb, actor, input.month, input.studio); return done(r.added ? `Added ${r.added} forecast rows from the pipeline` : "Nothing new to add from the pipeline"); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    const r = await autofillProjection(sb, actor, input.month, input.studio);
+    await logUiAction(actor, "autofill_projection", { ...input, added: r.added });
+    return done(r.added ? `Added ${r.added} forecast rows from the pipeline` : "Nothing new to add from the pipeline");
+  } catch (e) { return fail(e); }
 }
 
 // ---- finance (Zoho Books mirror) ----
 export async function raiseInvoice(input: { stage_id: number; invoice_number?: string; amount?: number; date?: string }): Promise<Result> {
-  try { const { sb, actor } = await me(); const r = await raiseInv(sb, actor, input); return done(`Invoice ${r.invoice_number} raised`); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    const r = await raiseInv(sb, actor, input);
+    await logUiAction(actor, "raise_invoice", { ...input, invoice_number: r.invoice_number, amount: r.amount });
+    return done(`Invoice ${r.invoice_number} raised`);
+  } catch (e) { return fail(e); }
 }
 export async function recordPayment(input: { invoice_number: string; amount: number; tds?: number; date?: string }): Promise<Result> {
-  try { const { sb, actor } = await me(); const r = await recordPay(sb, actor, input); return done(`Payment recorded. Balance ${r.balance ? "₹" + r.balance.toLocaleString("en-IN") : "cleared"}`); } catch (e) { return fail(e); }
+  try {
+    const { sb, actor } = await me();
+    const r = await recordPay(sb, actor, input);
+    await logUiAction(actor, "record_payment", input);
+    return done(`Payment recorded. Balance ${r.balance ? "₹" + r.balance.toLocaleString("en-IN") : "cleared"}`);
+  } catch (e) { return fail(e); }
 }
 export async function readNotifications(ids: number[]) {
   try { const { sb } = await me(); await markNotificationsRead(sb, ids); revalidatePath("/"); } catch { /* not critical */ }
 }
 
-// ---- Connect AI: API keys inherit the creator's role ----
+// ---- Connect AI: API keys inherit the creator's role, plus live MCP test runner ----
 export async function newApiKey(input: { name: string; scope: "read" | "act" }) {
   try {
     const { actor } = await me();
     assertCan(actor.role, "keys.manage");
-    const { key } = await createKey(input.name.trim() || "Unnamed key", input.scope, actor.email, actor.role, actor.studio);
+    const name = input.name.trim() || "Unnamed key";
+    const { key } = await createKey(name, input.scope, actor.email, actor.role, actor.studio);
+    await logUiAction(actor, "api_key_create", { name, scope: input.scope });
     revalidatePath("/");
     return { ok: true as const, key };
   } catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "Key not created." }; }
 }
 export async function revokeApiKey(id: number): Promise<Result> {
-  try { const { actor } = await me(); assertCan(actor.role, "keys.manage"); await revokeKey(id); return done("Key revoked"); } catch (e) { return fail(e); }
+  try {
+    const { actor } = await me();
+    assertCan(actor.role, "keys.manage");
+    await revokeKey(id);
+    await logUiAction(actor, "api_key_revoke", { id });
+    return done("Key revoked");
+  } catch (e) { return fail(e); }
+}
+export async function testMcpCall(input: { key_id?: number; client: string; tool: string; args: Record<string, unknown> }) {
+  try {
+    const { actor } = await me();
+    assertCan(actor.role, "keys.manage");
+    const sb = serviceDb();
+    const { data: keyRow } = input.key_id
+      ? await sb.from("api_keys").select("id,name,scope,role,studio,created_by").eq("id", input.key_id).is("revoked_at", null).maybeSingle()
+      : { data: null };
+    if (input.key_id && !keyRow) throw new Error("Selected API key was not found or has been revoked.");
+    const keyScope: Scope = keyRow?.scope === "act" || keyRow?.scope === "read" ? keyRow.scope : "read";
+    const keyRole = keyRow && isRole(keyRow.role) ? keyRow.role : actor.role;
+    const keyActor: Actor = {
+      id: null,
+      email: keyRow?.created_by ?? actor.email,
+      via: `mcp:${keyRow?.name ?? "Live test key"}`,
+      role: keyRole,
+      studio: keyRow ? (keyRow.studio ?? null) : actor.studio,
+    };
+    const allowed = toolsFor(keyScope, keyRole).some((t) => t.name === input.tool);
+    if (!allowed) throw new Error(`Key scope (${keyScope}) or role (${keyRole}) cannot run ${input.tool}.`);
+    const started = Date.now();
+    const client = input.client.trim() || "Codex CLI";
+    const agent = agentForTool(input.tool, input.args);
+    const auditedInput = { ...input.args, _actor: keyActor.email, _role: keyActor.role, _studio: keyActor.studio, _agent: agent };
+    try {
+      const output = await runTool(input.tool, { sb, actor: keyActor }, input.args);
+      const ms = Date.now() - started;
+      await logRun({ key_id: keyRow?.id ?? null, key_name: keyRow?.name ?? "Live test key", client, tool: input.tool, input: auditedInput, ok: true, ms });
+      revalidatePath("/");
+      return { ok: true as const, output, ms, client, agent };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await logRun({ key_id: keyRow?.id ?? null, key_name: keyRow?.name ?? "Live test key", client, tool: input.tool, input: auditedInput, ok: false, error: msg, ms: Date.now() - started });
+      revalidatePath("/");
+      return { ok: false as const, message: msg };
+    }
+  } catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "Test call failed." }; }
 }
 
 export async function signOut() {

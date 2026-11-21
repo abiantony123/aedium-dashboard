@@ -9,7 +9,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { toolsFor } from "@/lib/agents/tools";
 import { AGENTS, RULES, SERVER_INSTRUCTIONS } from "@/lib/agents/agents";
-import { verifyKey, serviceDb, logRun, type KeyInfo } from "@/lib/agents/keys";
+import { verifyKey, serviceDb, logRun, agentForTool, type KeyInfo } from "@/lib/agents/keys";
 import { isRole } from "@/lib/rbac";
 
 export const maxDuration = 60;
@@ -33,15 +33,16 @@ function keyFrom(req: Request, slug: string[] | undefined) {
   return new URL(req.url).searchParams.get("key") ?? "";
 }
 
-// Stateless: clientInfo only arrives with `initialize`, so later calls fall back to the User-Agent.
-function clientName(ua: string | null) {
+// Stateless: clientInfo only arrives with `initialize`, so later calls fall back to x-mcp-client or User-Agent.
+function clientName(ua: string | null, xClient: string | null) {
+  if (xClient?.trim()) return xClient.trim().slice(0, 40);
   if (!ua) return null;
-  const known = [["claude", "Claude"], ["openai", "ChatGPT"], ["chatgpt", "ChatGPT"], ["gemini", "Gemini"], ["cursor", "Cursor"], ["vscode", "VS Code"], ["mcp-remote", "mcp-remote"]] as const;
+  const known = [["codex", "Codex CLI"], ["claude", "Claude"], ["openai", "ChatGPT"], ["chatgpt", "ChatGPT"], ["gemini", "Gemini"], ["cursor", "Cursor"], ["windsurf", "Windsurf"], ["vscode", "VS Code"], ["mcp-remote", "mcp-remote"]] as const;
   const hit = known.find(([k]) => ua.toLowerCase().includes(k));
   return hit ? hit[1] : ua.split(/[\s/]/)[0].slice(0, 40);
 }
 
-function buildServer(key: KeyInfo, ua: string | null) {
+function buildServer(key: KeyInfo, ua: string | null, xClient: string | null) {
   const server = new McpServer({ name: "aedium-mis", title: "Aedium MIS", version: "1.0.0" }, { instructions: SERVER_INSTRUCTIONS });
   const sb = serviceDb();
   // A key acts with its creator's role (and studio, for project directors).
@@ -54,14 +55,16 @@ function buildServer(key: KeyInfo, ua: string | null) {
       annotations: { readOnlyHint: t.scope === "read", destructiveHint: false, openWorldHint: false, idempotentHint: t.scope === "read" },
     }, async (input: unknown) => {
       const started = Date.now();
-      const client = server.server.getClientVersion()?.name ?? clientName(ua);
+      const client = server.server.getClientVersion()?.name ?? clientName(ua, xClient);
+      const base = input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : { value: input };
+      const auditedInput = { ...base, _actor: actor.email, _role: actor.role, _studio: actor.studio, _agent: agentForTool(t.name, input) };
       try {
         const out = await (t.run as (c: unknown, i: unknown) => Promise<unknown>)({ sb, actor }, input);
-        await logRun({ key_id: key.id, key_name: key.name, client, tool: t.name, input, ok: true, ms: Date.now() - started });
+        await logRun({ key_id: key.id, key_name: key.name, client, tool: t.name, input: auditedInput, ok: true, ms: Date.now() - started });
         return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 1) }] };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        await logRun({ key_id: key.id, key_name: key.name, client, tool: t.name, input, ok: false, error: msg, ms: Date.now() - started });
+        await logRun({ key_id: key.id, key_name: key.name, client, tool: t.name, input: auditedInput, ok: false, error: msg, ms: Date.now() - started });
         return { isError: true, content: [{ type: "text" as const, text: msg }] };
       }
     });
@@ -87,7 +90,7 @@ async function handle(req: Request, ctx: { params: Promise<{ slug?: string[] }> 
     // Stateless server: no standalone SSE stream and no sessions to end.
     return json(405, { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed. Send JSON-RPC with POST." }, id: null }, { Allow: "POST, OPTIONS" });
   }
-  const server = buildServer(key, req.headers.get("user-agent"));
+  const server = buildServer(key, req.headers.get("user-agent"), req.headers.get("x-mcp-client"));
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   try {

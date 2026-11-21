@@ -8,6 +8,7 @@ import { canSee, tabsFor } from "@/lib/rbac";
 import { fyPlan, escalations, projection } from "@/lib/plan";
 import { financeQueue, notificationsFor } from "@/lib/finance";
 import { listPos } from "@/lib/po";
+import { checkCodeCompliance, searchEmailEvidence, type ComplianceItem, type EmailCitation } from "@/lib/compliance";
 import Dashboard from "./dashboard";
 import type { Run } from "./connect";
 
@@ -31,15 +32,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
     const data = await loadDashboard(sb, studio, client);
     const errors: string[] = [];
     const see = (t: Parameters<typeof canSee>[1]) => canSee(user.role, t);
-    const [keys, runs, plan, esc, proj, queue, pos, notes] = await Promise.all([
+    const [keys, runs, plan, esc, proj, queue, pos, notes, compliance, emailEvidence] = await Promise.all([
       see("connect") ? safe(listKeys(), [] as KeyInfo[], errors, "Connect AI") : [],
-      see("connect") || see("agents") ? safe(recentRuns(15) as Promise<Run[]>, [] as Run[], errors, "Call log") : [],
+      see("connect") || see("agents") ? safe(recentRuns(40) as Promise<Run[]>, [] as Run[], errors, "Call log") : [],
       see("plan") ? safe(fyPlan(sb, studio, client), null, errors, "Plan") : null,
       see("plan") ? safe(escalations(sb, studio, client), [], errors, "Escalation") : [],
       see("plan") ? safe(projection(sb, month, studio, client), null, errors, "Projection") : null,
       see("finance") ? safe(financeQueue(sb), [], errors, "Finance queue") : [],
       see("agents") ? safe(listPos(sb), [], errors, "PO intake") : [],
       safe(notificationsFor(sb, user.role), [], errors, "Notifications"),
+      see("agents") ? safe(checkCodeCompliance(sb, { studio, client, limit: 12 }), [] as ComplianceItem[], errors, "Code compliance") : [],
+      see("agents") ? safe(searchEmailEvidence(sb, { studio, limit: 12 }), [] as EmailCitation[], errors, "Email evidence") : [],
     ]);
     const setupError = errors.length ? `Some sections need the latest SQL migrations (supabase/migrations): ${errors.join(" · ")}` : null;
     const fs = findings(data);
@@ -57,7 +60,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
     return (
       <Dashboard data={data} email={user.email} role={user.role} roleStudio={user.studio} tabs={tabsFor(user.role)} origin={origin}
         keys={keys} runs={runs} setupError={setupError} findings={fs} ruleText={ruleText}
-        plan={plan} escalations={esc} projection={proj} month={month} financeQueue={queue} pos={pos} notifications={notes} />
+        plan={plan} escalations={esc} projection={proj} month={month} financeQueue={queue} pos={pos} notifications={notes}
+        compliance={compliance} emailEvidence={emailEvidence} />
     );
   } catch (e) {
     return (

@@ -2,14 +2,16 @@
 // (any MCP client: Claude, ChatGPT, Gemini, Cursor...). Inputs are zod schemas; JSON Schema is derived from them.
 import { z } from "zod";
 import type { Db } from "../supabase/server";
-import { loadDashboard } from "../data";
+import { all, loadDashboard } from "../data";
 import { recordStageEvent, recordDecision, draftEmail, type Actor } from "./actions";
 import { AGENTS, RULES } from "./agents";
 import { findings } from "./insights";
 import { can, type Action, type Role } from "../rbac";
 import { PoInput, stagePo, listPos, getPo, reviewPo, excelRows } from "../po";
-import { fyPlan, escalations, projection, addProjection } from "../plan";
+import { fyPlan, escalations, projection, addProjection, setTarget, setConstruction, decideEscalation, escalationDraft, autofillProjection } from "../plan";
 import { financeQueue, raiseInvoice, recordPayment } from "../finance";
+import { checkCodeCompliance, decideCodeCompliance, searchEmailEvidence, logProjectEmail } from "../compliance";
+import { recentRuns } from "./keys";
 
 export type ToolCtx = { sb: Db; actor: Actor };
 export type Scope = "read" | "act";
@@ -33,8 +35,8 @@ const fail = (e: { message: string } | null) => { if (e) throw new Error(e.messa
 export const TOOLS = [
   tool({
     name: "get_agent", title: "Load an agent's instructions", scope: "read",
-    description: "Instructions for one Aedium agent (analyst, po_intake, collections, invoice_trigger, contract_watch, finance, planner). Call this when the person asks to run an agent, then follow the instructions. Works in clients that do not support MCP prompts.",
-    input: { name: z.enum(["analyst", "po_intake", "collections", "invoice_trigger", "contract_watch", "finance", "planner"]) },
+    description: "Instructions for one Aedium agent (analyst, po_intake, collections, invoice_trigger, contract_watch, finance, planner, email_evidence, code_compliance). Call this when the person asks to run an agent, then follow the instructions. Works in clients that do not support MCP prompts.",
+    input: { name: z.enum(["analyst", "po_intake", "collections", "invoice_trigger", "contract_watch", "finance", "planner", "email_evidence", "code_compliance"]) },
     run: async (_ctx, { name }) => { const a = AGENTS.find((x) => x.name === name)!; return { ...a, rules: RULES }; },
   }),
   tool({
@@ -302,6 +304,80 @@ export const TOOLS = [
     description: "Record a payment received against an invoice: amount received and TDS withheld. Reduces the invoice balance in Zoho Books (mirror).",
     input: { invoice_number: z.string(), amount: z.number().positive(), tds: z.number().min(0).optional(), date: z.string().optional(), reference: z.string().optional() },
     run: async ({ sb, actor }, input) => recordPayment(sb, actor, input),
+  }),
+
+  // ---------- email evidence, code compliance, tracker & full plan controls ----------
+  tool({
+    name: "email_evidence_search", title: "Search project email evidence", scope: "read",
+    description: "Search client approval emails, PO threads and billing correspondence indexed by project number, studio or keyword.",
+    input: { query: z.string().optional(), project_number: z.string().optional(), studio, limit: z.number().int().min(1).max(30).optional() },
+    run: async ({ sb, actor }, { query, project_number, studio, limit }) => searchEmailEvidence(sb, { query, project_number, studio: scoped(actor, studio), limit }),
+  }),
+  tool({
+    name: "log_project_email", title: "Log a client email onto a project thread", scope: "act", need: ["data.read"],
+    description: "Attach a client approval email or reply to a project's mail evidence log so agents can cite it later.",
+    input: { project_number: z.string(), subject: z.string().min(1), body: z.string().min(1), from: z.string().optional() },
+    run: async ({ sb, actor }, input) => logProjectEmail(sb, actor, input),
+  }),
+  tool({
+    name: "code_compliance_check", title: "Run NBC 2016 & bye-law compliance check", scope: "read",
+    description: "Evaluate active project lines against NBC Part 4 Fire & Life Safety, FAR/FSI, Parking norms and studio service clearances.",
+    input: { project_number: z.string().optional(), studio, limit: z.number().int().min(1).max(30).optional() },
+    run: async ({ sb, actor }, { project_number, studio, limit }) => checkCodeCompliance(sb, { project_number, studio: scoped(actor, studio), limit }),
+  }),
+  tool({
+    name: "decide_code_compliance", title: "Verify or flag project code compliance", scope: "act", need: ["agent.contract_watch"],
+    description: "Record a sign-off or flag on a project line's NBC & municipal bye-law compliance checklist.",
+    input: { row_no: z.number().int(), decision: z.enum(["approved", "dismissed"]), note: z.string().max(500).optional() },
+    run: async ({ sb, actor }, { row_no, decision, note }) => decideCodeCompliance(sb, actor, row_no, decision, note),
+  }),
+  tool({
+    name: "set_fy_target", title: "Set FY billing target", scope: "act", need: ["plan.target"],
+    description: "Set the financial-year billing target in INR for the firm ('All') or a specific studio.",
+    input: { fy: z.string().min(4), studio: z.string().default("All"), target: z.number().positive() },
+    run: async ({ sb, actor }, { fy, studio, target }) => { await setTarget(sb, actor, fy, studio, target); return { ok: true, fy, studio, target }; },
+  }),
+  tool({
+    name: "set_construction_schedule", title: "Set confirmed construction start & duration", scope: "act", need: ["plan.construction"],
+    description: "Confirm the construction start month (YYYY-MM) and optional duration (1-120 months) for an active project studio line.",
+    input: { project_number: z.string(), studio: z.string().nullable(), start: z.string().regex(/^\d{4}-\d{2}$/), months: z.number().int().min(1).max(120).nullable().optional() },
+    run: async ({ sb, actor }, { project_number, studio, start, months }) => { await setConstruction(sb, actor, { project_number, studio, start, months: months ?? null }); return { ok: true, project_number, studio, start, months: months ?? null }; },
+  }),
+  tool({
+    name: "decide_escalation", title: "Propose or dismiss a contract escalation", scope: "act", need: ["agent.contract_watch"],
+    description: "Propose or dismiss an escalation notice for a Summary row, and return the drafted client notice.",
+    input: { row_no: z.number().int(), decision: z.enum(["approved", "dismissed"]) },
+    run: async ({ sb, actor }, { row_no, decision }) => { await decideEscalation(sb, actor, row_no, decision); return { ok: true, row_no, decision, draft: decision === "approved" ? await escalationDraft(sb, row_no) : null }; },
+  }),
+  tool({
+    name: "autofill_projection", title: "Auto-fill monthly projection from pipeline", scope: "act", need: ["plan.projection"],
+    description: "Populate a month's (YYYY-MM) weekly forecast with completed/approved stages and the next construction instalment.",
+    input: { month: z.string().regex(/^\d{4}-\d{2}$/), studio },
+    run: async ({ sb, actor }, { month, studio }) => autofillProjection(sb, actor, month, scoped(actor, studio)),
+  }),
+  tool({
+    name: "tracker_sheet", title: "Read live master tracker sheet", scope: "read",
+    description: "Read rows from the live master tracker ('summary' or 'stages'), filtered by studio, client or keyword.",
+    input: { sheet: z.enum(["summary", "stages"]).default("summary"), studio, client: z.string().optional(), search: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
+    run: async ({ sb, actor }, { sheet, studio, client, search, limit }) => {
+      const st = scoped(actor, studio);
+      const q = (search ?? "").trim().toLowerCase();
+      const lines = (await all<Record<string, unknown>>(sb, "project_lines", "*", "row_no")).filter((l) => (!st || l.studio === st) && (!client || l.client_name === client));
+      if (sheet === "summary") {
+        const rows = q ? lines.filter((r) => JSON.stringify(r).toLowerCase().includes(q)) : lines;
+        return { sheet, total: rows.length, rows: rows.slice(0, limit ?? 25) };
+      }
+      const pns = new Set(lines.map((l) => String(l.project_number)));
+      const stages = (await all<Record<string, unknown>>(sb, "v_stages", "*", "row_no")).filter((s) => (!st || s.studio === st) && (!client || pns.has(String(s.project_number))));
+      const rows = q ? stages.filter((r) => JSON.stringify(r).toLowerCase().includes(q)) : stages;
+      return { sheet, total: rows.length, rows: rows.slice(0, limit ?? 25) };
+    },
+  }),
+  tool({
+    name: "audit_log", title: "Read change & agent audit log", scope: "read",
+    description: "Return recent changes across the Dashboard UI and MCP/Agent calls, including timestamp, person, role, agent, client, target and details.",
+    input: { limit: z.number().int().min(1).max(100).optional() },
+    run: async (_ctx, { limit }) => recentRuns(limit ?? 30),
   }),
 ] as const;
 

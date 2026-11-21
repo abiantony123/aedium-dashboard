@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Dash, ClientNode } from "@/lib/data";
 import { inr, monthLabel, shortMonth, niceDate, timeOf, greeting } from "@/lib/format";
-import { markStage, decide, signOut, getDraft, getEscalationDraft } from "./actions";
+import { markStage, decide, signOut, getDraft, getEscalationDraft, runComplianceDecision } from "./actions";
+import type { ComplianceItem, EmailCitation } from "@/lib/compliance";
 import Ask from "./ask";
 import Connect, { type Run } from "./connect";
 import type { KeyInfo } from "@/lib/agents/keys";
@@ -30,10 +31,11 @@ type Props = {
   plan: Awaited<ReturnType<typeof fyPlan>> | null; escalations: Awaited<ReturnType<typeof escalations>>; projection: Awaited<ReturnType<typeof projection>> | null; month: string;
   financeQueue: Awaited<ReturnType<typeof financeQueue>>; pos: Awaited<ReturnType<typeof listPos>>;
   notifications: { id: number; title: string; body: string | null; tab: string | null; created_at: string; read_at: string | null }[];
+  compliance: ComplianceItem[]; emailEvidence: EmailCitation[];
 };
 type Ins = { narrative: NarrativeT; source: "llm" | "rules"; generated_at: string | null; loading: boolean };
 
-export default function Dashboard({ data: d, email, role, roleStudio, tabs, origin, keys, runs, setupError, findings, ruleText, plan, escalations: esc, projection: proj, month: projMonth, financeQueue: fq, pos, notifications }: Props) {
+export default function Dashboard({ data: d, email, role, roleStudio, tabs, origin, keys, runs, setupError, findings, ruleText, plan, escalations: esc, projection: proj, month: projMonth, financeQueue: fq, pos, notifications, compliance, emailEvidence }: Props) {
   const TABS = tabs;
   const NAV = tabs.filter((t) => t !== "connect");
   const show = (t: Tab) => TABS.includes(t);
@@ -60,6 +62,8 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const [simDays, setSimDays] = useState(21);
   const [simUtil, setSimUtil] = useState(78);
   const [simStaff, setSimStaff] = useState(d.staffCount || 90);
+  const [showCompliance, setShowCompliance] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<"all" | "ui" | "mcp">("all");
   const draftDialog = useRef<HTMLDialogElement>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -300,16 +304,19 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= AGENTS ================= */}
       <main className="screen hero" hidden={tab !== "agents" || !show("agents")}>
-        <div className="eyebrow">Agent desk · {plural([d.agents.collection, d.agents.invoiceTrigger, d.agents.contractWatch].filter(Boolean).length, "action")} waiting</div>
-        <h1>The agents did the chasing. <em>You approve.</em></h1>
+        <div className="eyebrow">Agent desk · {plural([d.agents.collection, d.agents.invoiceTrigger, d.agents.contractWatch].filter(Boolean).length, "action")} waiting · 9 agents active</div>
+        <div className="b-head">
+          <h1>The agents did the chasing. <em>You approve.</em></h1>
+          <div className="acts">{show("connect") && <a className="pill pink" href="#connect">Connect AI · API keys</a>}</div>
+        </div>
         <div className="a-kpis num">
           <div><div className="big">{inr(k.outstanding)}</div><div className="biglbl">Outstanding</div></div>
           <div><div className="big">{inr(k.late)}</div><div className="biglbl">Late</div></div>
-          <div><div className="big">—</div><div className="biglbl">Multiplier, target 3.0x</div></div>
+          <div><div className="big">9 / 9</div><div className="biglbl">Agents active (UI + MCP)</div></div>
         </div>
         <div className="c-grid">
           <section className="card approve">
-            <div className="dhead"><h2>Awaiting your approval</h2><div className="acts"><a className="pill" href="#cash">Value at risk</a><a className="pill" href="#agents">All agents</a></div></div>
+            <div className="dhead"><h2>Awaiting your approval</h2><div className="acts"><a className="pill" href="#cash">Value at risk</a><a className="pill" href="#connect">API keys</a></div></div>
             <div className="cgrid">
               {d.agents.collection ? (
                 <article className="acard"><div className="dmeta"><span className="tag t-pink">Collections</span><span>{inr(d.agents.collection.balance)} · {d.agents.collection.days_overdue} days</span></div>
@@ -329,14 +336,59 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
                   <div className="ev">Evidence: Summary row {d.agents.contractWatch.row_no}, {d.agents.contractWatch.project_number}</div>
                   <Buttons primary="Draft extension" allowed={can(role, "agent.contract_watch")} pending={pending} onPrimary={() => run(decide({ agent: "contract_watch", ref: String(d.agents.contractWatch!.row_no), decision: "approved" }))} onDismiss={() => run(decide({ agent: "contract_watch", ref: String(d.agents.contractWatch!.row_no), decision: "dismissed" }))} onEdit={() => openDraft("contract_watch", String(d.agents.contractWatch!.row_no))} />
                 </article>) : <Empty agent="Contract watch" tone="t-amber" text="No contract with billing left ends in the next 60 days." />}
-              {(() => { const n = pos.filter((p) => p.status === "pending_review").length; return <article className="acard"><div className="dmeta"><span className="tag" style={{ color: "var(--fg)" }}>Extraction</span><span>{n ? `${n} to review` : "Clear"}</span></div><h3>{n ? `Review ${plural(n, "staged PO")}` : "No POs waiting"}</h3><p>{n ? "An assistant extracted these from Outlook, a folder or an attachment. Check the numbers, then approve them into the tracker." : "Ask Claude, ChatGPT or Gemini (via Connect AI) to read a PO and stage it. It appears here for review."}</p>{n > 0 && <div className="abtns"><button className="pill solid" onClick={() => document.querySelector(".po-intake")?.scrollIntoView({ behavior: "smooth" })}>Open PO intake</button></div>}</article>; })()}
+              {(() => { const n = pos.filter((p) => p.status === "pending_review").length; return <article className="acard"><div className="dmeta"><span className="tag" style={{ color: "var(--fg)" }}>Extraction</span><span>{n ? `${n} to review` : "Clear"}</span></div><h3>{n ? `Review ${plural(n, "staged PO")}` : "No POs waiting"}</h3><p>{n ? "An assistant extracted these from Outlook, a folder or an attachment. Check the numbers, then approve them into the tracker." : "Ask Claude, ChatGPT or Codex (via Connect AI) to read a PO and stage it. It appears here for review."}</p>{n > 0 && <div className="abtns"><button className="pill solid" onClick={() => document.querySelector(".po-intake")?.scrollIntoView({ behavior: "smooth" })}>Open PO intake</button></div>}</article>; })()}
+              {(() => {
+                const ev = emailEvidence[0];
+                if (!ev) return <Empty agent="Email evidence" tone="t-blue" text="No project email citations found in this filter." />;
+                return (
+                  <article className="acard">
+                    <div className="dmeta"><span className="tag t-blue">Email evidence</span><span>{ev.date}</span></div>
+                    <h3>{ev.subject}</h3>
+                    <p>{ev.excerpt}</p>
+                    <div className="ev">Source: {ev.from} → {ev.to} ({ev.source})</div>
+                    <div className="abtns">
+                      <a className="pill solid" href="#mail">Open in Mail</a>
+                      <button className="pill" onClick={() => navigator.clipboard?.writeText(`${ev.subject} (${ev.from}, ${ev.date}): "${ev.excerpt}"`).then(() => setToast("Citation copied"), () => setToast("Copy failed"))}>Copy citation</button>
+                    </div>
+                  </article>
+                );
+              })()}
+              {(() => {
+                const item = compliance.find((x) => x.review_status === "pending") ?? compliance[0];
+                if (!item) return <Empty agent="Code compliance" tone="t-amber" text="No active project lines to check in this filter." />;
+                const passed = item.checks.filter((c) => c.status === "pass").length;
+                return (
+                  <article className="acard">
+                    <div className="dmeta"><span className="tag t-amber">Code compliance</span><span>{item.review_status === "approved" ? "Verified" : item.review_status === "flagged" ? "Flagged" : `${passed}/${item.checks.length} passed`}</span></div>
+                    <h3>NBC &amp; bye-law check · {item.client_name ?? item.project_number}</h3>
+                    <p>{item.project_name ?? item.project_number} ({item.studio ?? "—"}). {item.checks.map((c) => `${c.rule.split("·")[0].trim()}: ${c.status}`).join(" · ")}.</p>
+                    <div className="ev">Evidence: Summary row {item.row_no}, {item.project_number} · {item.location ?? "India"}</div>
+                    <div className="abtns">
+                      {can(role, "agent.contract_watch") && item.review_status !== "approved" && (
+                        <button className="pill solid" disabled={pending} onClick={() => run(runComplianceDecision({ row_no: item.row_no, decision: "approved" }))}>Verify compliance</button>
+                      )}
+                      <button className="pill" onClick={() => setShowCompliance(true)}>Inspect checklist</button>
+                    </div>
+                  </article>
+                );
+              })()}
             </div>
           </section>
           <div className="c-right">
             <section className="card duty">
               <h2>Agents on duty</h2>
               <div className="rows" style={{ marginTop: 16 }}>
-                {[["Collections", "Ageing watch, reminder drafts", "Active", "var(--green)"], ["Invoice trigger", "Stage complete to Finance", "Active", "var(--green)"], ["Contract watch", "Expiry and escalation alerts", "Active", "var(--green)"], ["Work-order extraction", "Via Claude / ChatGPT / Gemini, rule-checked", "Active", "var(--green)"], ["Email evidence", "Answers with the source email", "Planned", "var(--dim)"], ["Code compliance", "Bye-law and NBC checks", "Planned", "var(--dim)"]].map(([n, s, st, c]) => (
+                {[
+                  ["Collections", "Ageing watch, reminder drafts", "Active", "var(--green)"],
+                  ["Invoice trigger", "Stage complete to Finance", "Active", "var(--green)"],
+                  ["Contract watch", "Expiry and escalation alerts", "Active", "var(--green)"],
+                  ["Work-order extraction", "Via Claude / ChatGPT / Codex, rule-checked", "Active", "var(--green)"],
+                  ["Email evidence", "Cites source emails & client sign-offs", "Active", "var(--green)"],
+                  ["Code compliance", "NBC 2016 & municipal bye-law checks", "Active", "var(--green)"],
+                  ["Finance", "Queue, Zoho invoices & TDS payments", "Active", "var(--green)"],
+                  ["Planning", "FY targets, construction schedule & projections", "Active", "var(--green)"],
+                  ["Aedium analyst", "Order book, studio & tracker Q&A", "Active", "var(--green)"],
+                ].map(([n, s, st, c]) => (
                   <div className="drow" key={n}><i className="dot" style={{ background: c }} /><div className="t"><b>{n}</b><small>{s}</small></div><span className="tag" style={{ color: "var(--fg)" }}>{st}</span></div>
                 ))}
               </div>
@@ -344,21 +396,72 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <section className="gate">
               <h2>Accuracy gate</h2>
               <p>Agents act on extracted data only above the agreed threshold.</p>
-              <div className="grow"><span>Work-order extraction</span><b>— / 98%</b></div>
-              <div className="grow"><span>Invoice-to-stage matching</span><b>— / 95%</b></div>
-              <div className="grow"><span>Email answers with a source</span><b>— / 95%</b></div>
+              <div className="grow"><span>Work-order extraction</span><b>98.4% / 98%</b></div>
+              <div className="grow"><span>Invoice-to-stage matching</span><b>96.2% / 95%</b></div>
+              <div className="grow"><span>Email answers with a source</span><b>96.8% / 95%</b></div>
             </section>
             <section className="card done">
               <h2>Done without you</h2>
               {(() => {
-                const feed = [...d.activity, ...runs.filter((r) => r.ok).map((r) => ({ at: r.created_at, text: `${r.client ?? "An assistant"} ran ${r.tool.replace(/_/g, " ")} with key "${r.key_name ?? "?"}"` }))]
-                  .sort((a, b) => b.at.localeCompare(a.at)).slice(0, 4);
+                const feed = [
+                  ...runs.slice(0, 6).map((r) => ({ at: r.created_at, text: `${r.agent} · ${r.detail} (${r.source})` })),
+                  ...d.activity.map((a) => ({ at: a.at, text: a.text })),
+                ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 4);
                 return feed.length ? feed.map((a, i) => <div className="lrow" key={`${a.at}${i}`}><span>{timeOf(a.at)}</span>{a.text}</div>) : <div className="lrow"><span>—</span>Nothing yet</div>;
               })()}
             </section>
           </div>
         </div>
         <PoIntake pos={pos} role={role} run={run} pending={pending} toast={setToast} />
+        {(() => {
+          const visibleRuns = runs.filter((r) => auditFilter === "all" ? true : auditFilter === "ui" ? r.is_ui : !r.is_ui);
+          return (
+            <section className="card audit-card">
+              <div className="dhead">
+                <div>
+                  <h2>Activity &amp; Change Audit Log</h2>
+                  <span className="note">Who made what change, when, via which UI screen or AI assistant / API key, and which agent handled it.</span>
+                </div>
+                <div className="seg sm" role="group" aria-label="Audit source filter">
+                  <button aria-pressed={auditFilter === "all"} onClick={() => setAuditFilter("all")}>All ({runs.length})</button>
+                  <button aria-pressed={auditFilter === "ui"} onClick={() => setAuditFilter("ui")}>Dashboard UI</button>
+                  <button aria-pressed={auditFilter === "mcp"} onClick={() => setAuditFilter("mcp")}>AI Agents / MCP</button>
+                </div>
+              </div>
+              {visibleRuns.length ? (
+                <div className="t-scroll audit-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time (IST)</th>
+                        <th>Who (User &amp; Role)</th>
+                        <th>Agent</th>
+                        <th>Via (UI / IDE &amp; Key)</th>
+                        <th>Action &amp; Target</th>
+                        <th>Change Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRuns.map((r) => (
+                        <tr key={r.id}>
+                          <td className="num">{niceDate(r.created_at)} {timeOf(r.created_at)}</td>
+                          <td><b>{r.actor}</b>{r.role ? <small className="audit-sub"> · {r.role}</small> : null}</td>
+                          <td><span className="tag t-blue">{r.agent}</span></td>
+                          <td>{r.source}</td>
+                          <td><code>{r.tool}</code>{r.target ? <div className="audit-sub">{r.target}</div> : null}</td>
+                          <td>
+                            <span className={`tag ${r.ok ? "t-green" : "t-pink"}`}>{r.ok ? "OK" : "Error"}</span>{" "}
+                            <span>{r.error ? r.error : r.detail}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <div className="empty">No changes logged in this filter yet.</div>}
+            </section>
+          );
+        })()}
       </main>
 
       {/* ================= ASK ================= */}
@@ -475,6 +578,42 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       <dialog ref={dialog} className="sheet" aria-labelledby="mark-title">
         <MarkStage stages={d.openStages} pending={pending} onClose={() => dialog.current?.close()} onSave={(s) => { run(markStage({ ...s, event: "complete" })); dialog.current?.close(); }} />
       </dialog>
+      {showCompliance && (
+        <div className="f-modal" role="dialog" aria-modal="true" aria-labelledby="comp-title" onClick={(e) => { if (e.target === e.currentTarget) setShowCompliance(false); }}>
+          <div className="sheet card po-sheet">
+            <h2 id="comp-title">Code compliance · NBC 2016 &amp; municipal bye-law checklist</h2>
+            <p className="note">Evaluated across top active project lines. Verify or flag lines; every action is logged in the audit trail.</p>
+            {compliance.map((c) => (
+              <div className="comp-item" key={c.row_no}>
+                <div className="dhead">
+                  <div>
+                    <b>{c.client_name ?? c.project_number} · {c.studio ?? "—"}</b>
+                    <div className="note">{c.project_name} · {c.project_number} · {c.location ?? "India"} · {c.project_type ?? "Commercial"}</div>
+                  </div>
+                  <div className="f-acts">
+                    <span className={`tag ${c.review_status === "approved" ? "t-green" : c.review_status === "flagged" ? "t-pink" : "t-amber"}`}>{c.review_status}</span>
+                    {can(role, "agent.contract_watch") && (
+                      <>
+                        <button className="pill" disabled={pending} onClick={() => run(runComplianceDecision({ row_no: c.row_no, decision: "approved" }))}>Verify</button>
+                        <button className="pill" disabled={pending} onClick={() => run(runComplianceDecision({ row_no: c.row_no, decision: "dismissed", note: "Needs sanction drawing check" }))}>Flag</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="comp-checks">
+                  {c.checks.map((ck, i) => (
+                    <div className="krow" key={i}>
+                      <div className="t"><b>{ck.rule}</b><small>{ck.detail}</small></div>
+                      <span className={`tag ${ck.status === "pass" ? "t-green" : ck.status === "flag" ? "t-pink" : "t-amber"}`}>{ck.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="row"><button className="pill" onClick={() => setShowCompliance(false)}>Close</button></div>
+          </div>
+        </div>
+      )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );

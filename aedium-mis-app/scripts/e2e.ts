@@ -71,9 +71,9 @@ try {
   // ---------- 2. PO intake through MCP ----------
   const admin = await mcp(await mkKey("e2e admin", "admin"));
   const tools = (await admin.listTools()).tools.map((t) => t.name);
-  ok("admin key sees PO, plan and finance tools", ["stage_po", "review_po", "fy_plan", "raise_invoice", "tracker_rows_for_excel"].every((t) => tools.includes(t)), `${tools.length} tools`);
+  ok("admin key sees PO, plan, finance, compliance & mail tools", ["stage_po", "review_po", "fy_plan", "raise_invoice", "tracker_rows_for_excel", "email_evidence_search", "code_compliance_check", "audit_log", "tracker_sheet"].every((t) => tools.includes(t)), `${tools.length} tools`);
   const prompts = (await admin.listPrompts()).prompts.map((p) => p.name);
-  ok("po_intake, finance, planner prompts", ["po_intake", "finance", "planner"].every((p) => prompts.includes(p)), prompts.join(","));
+  ok("all 9 agent prompts registered", ["analyst", "po_intake", "finance", "planner", "collections", "invoice_trigger", "contract_watch", "email_evidence", "code_compliance"].every((p) => prompts.includes(p)), prompts.join(","));
   const schema = await call(admin, "get_po_schema");
   ok("get_po_schema lists studios", schema.json?.studios?.includes("MEPF"), `${schema.json?.studios?.length} studios`);
 
@@ -155,8 +155,14 @@ try {
   ok("employee cannot export", exEmp.status === 403);
   const ins = await fetch(`${BASE}/api/insights`, { headers: { cookie: await cookie("admin") } });
   ok("insights API", ins.status === 200, (await ins.json()).source);
+  const ee = await call(admin, "email_evidence_search", { limit: 3 });
+  ok("email_evidence_search returns citations", !ee.err && Array.isArray(ee.json) && ee.json.length > 0, `${ee.json?.length ?? 0} citations`);
+  const cc = await call(admin, "code_compliance_check", { limit: 3 });
+  ok("code_compliance_check returns NBC checklists", !cc.err && Array.isArray(cc.json) && cc.json.length > 0 && Array.isArray(cc.json[0]?.checks), `${cc.json?.length ?? 0} lines`);
+  const audit = await call(admin, "audit_log", { limit: 10 });
+  ok("audit_log captures actor, agent, source & target", !audit.err && Array.isArray(audit.json) && audit.json.some((r: any) => r.tool === "code_compliance_check" && r.agent === "Code compliance agent" && r.actor && r.target), `${audit.json?.length ?? 0} entries`);
   const plan = await (await fetch(`${BASE}/`, { headers: { cookie: await cookie("admin") } })).text();
-  ok("dashboard renders Plan, Finance, Mail, PO intake", ["What can we bill this year?", "Stages ready to bill.", "Every client conversation", "PO intake"].every((s) => plan.includes(s)));
+  ok("dashboard renders Plan, Finance, Mail, PO intake & Audit Log", ["What can we bill this year?", "Stages ready to bill.", "Every client conversation", "PO intake", "Activity &amp; Change Audit Log", "Codex CLI"].every((s) => plan.includes(s)));
   for (const c of [admin, fin, pm]) await c.close();
 } catch (e) {
   failN++; console.log("ERROR", e instanceof Error ? e.stack : e);
