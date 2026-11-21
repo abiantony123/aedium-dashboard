@@ -122,7 +122,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       {setupError && tab !== "connect" && <div className="banner">{setupError}</div>}
       {/* ================= BRIEF ================= */}
       <main className="screen hero" hidden={tab !== "brief" || !show("brief")}>
-        <div className="eyebrow">Morning brief · {niceDate(d.today)}{d.studio ? ` · ${d.studio}` : ""}</div>
+        <div className="eyebrow">Daily brief · {niceDate(d.today)}{d.studio ? ` · ${d.studio}` : ""}</div>
         <h1>{greeting()}. <em>Here is what needs you.</em></h1>
         <div className="a-kpis num">
           <div><div className="big">{inr(k.contract)}</div><div className="biglbl">Contract value</div></div>
@@ -233,7 +233,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
               <div /><div className="cols"><span>CONCEPT</span><span>DESIGN</span><span>SANCTION</span><span>GFC</span><span>BUILD</span></div>
               {d.timeline.map((l) => (
                 <Fragment2 key={l.id}>
-                  <div className="pname"><b>{l.client_name ?? l.project_number}</b><span>{l.studio} · {l.project_stage ?? l.status ?? "—"}</span></div>
+                  <div className="pname"><b>{l.client_name ?? l.project_number}</b><span>{l.studio} · {l.project_stage ?? l.status ?? "No stage recorded"}</span></div>
                   <div className="bar" title={`${inr(l.split_value)} contract · ${Math.round((l.billed_pct ?? 0) * 100)}% billed`}><i className="b1" style={{ width: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%` }} /></div>
                 </Fragment2>
               ))}
@@ -346,7 +346,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <div className="x num">—</div>
             <div className="sub">{d.staffCount} staff listed · payroll not connected</div>
             <div className="mtrack"><i style={{ width: 0 }} /></div>
-            <div className="maxis"><span>0x</span><span>Break-even [x]x</span><span>3.0x</span></div>
+            <div className="maxis"><span>0x</span><span>Break-even needs payroll</span><span>3.0x</span></div>
             <div className={`mnote swap${ins.loading ? " loading" : ""}`} key={ins.source}>{ins.source === "llm" ? "AI reading: " : ""}{text.studios_note}</div>
           </section>
           <section className="card bubbles">
@@ -356,13 +356,13 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           </section>
           <section className="card move">
             <h2>What would move it?</h2>
-            <div className="srow2"><span>Days from sign-off to invoice</span><span className="vchip2">[n] days</span></div>
+            <div className="srow2"><span>Days from sign-off to invoice</span><span className="vchip2">—</span></div>
             <div className="slider"><i /><b /></div>
-            <div className="srow2"><span>Billable utilisation</span><span className="vchip2">[x]%</span></div>
+            <div className="srow2"><span>Billable utilisation</span><span className="vchip2">—</span></div>
             <div className="slider"><i /><b /></div>
             <div className="srow2"><span>Studio headcount</span><span className="vchip2">{d.staffCount}</span></div>
             <div className="slider"><i /><b /></div>
-            <div className="proj"><span>Projected multiplier</span><b>[x.xx]x</b></div>
+            <div className="proj"><span>Projected multiplier</span><b>—</b></div>
           </section>
         </div>
         <div className="e-row2">
@@ -370,11 +370,11 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <div className="dhead"><h2>Studio multipliers</h2><span className="warn">Payroll and timesheets not yet connected</span></div>
             <div className="thd"><span>STUDIO</span><span>LINES</span><span>TCV</span><span>{shortMonth(d.reportMonth)}<br />REVENUE</span><span>{shortMonth(d.reportMonth)}<br />PAYROLL</span><span>MULTIPLIER VS 3.0X</span></div>
             {top3.map((s, i) => (
-              <div className="trow num" key={s.studio}><span className="st"><i className="dot" style={{ background: ["var(--pink)", "var(--blue-soft)", "var(--muted)"][i] }} />{s.studio}</span><span>{s.lines}</span><span>{inr(s.tcv)}</span><span>{s.revenue ? `+${inr(s.revenue)}` : "₹0"}</span><span>[₹]</span><span className="mbar"><i style={{ ["--w" as string]: "0%", ["--c" as string]: "var(--muted)" }} />[x]x</span></div>
+              <div className="trow num" key={s.studio}><span className="st"><i className="dot" style={{ background: ["var(--pink)", "var(--blue-soft)", "var(--muted)"][i] }} />{s.studio}</span><span>{s.lines}</span><span>{inr(s.tcv)}</span><span>{s.revenue ? `+${inr(s.revenue)}` : "₹0"}</span><span>—</span><span className="mbar"><i style={{ ["--w" as string]: "0%", ["--c" as string]: "var(--muted)" }} />—</span></div>
             ))}
             <div className="effort"><h2>Effort vs fee burned</h2><small>Hours need project timesheets · fee from tracker</small></div>
             {d.timeline.slice(0, 3).map((l, i) => (
-              <div className="erow" key={l.id}><span style={{ textAlign: "left", color: "var(--fg)", fontSize: 15 }}>{l.client_name ?? l.project_number}</span><i style={{ ["--w" as string]: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%`, ["--c" as string]: i ? "var(--blue-soft)" : "var(--pink)" }} /><span>[hours] · {Math.round((l.billed_pct ?? 0) * 100)}% fee</span></div>
+              <div className="erow" key={l.id}><span style={{ textAlign: "left", color: "var(--fg)", fontSize: 15 }}>{l.client_name ?? l.project_number}</span><i style={{ ["--w" as string]: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%`, ["--c" as string]: i ? "var(--blue-soft)" : "var(--pink)" }} /><span>Hours n/a · {Math.round((l.billed_pct ?? 0) * 100)}% fee</span></div>
             ))}
           </section>
           <Forecast months={d.months.slice(0, span)} committed={d.committed.slice(0, span)} span={span} setSpan={setSpan} />

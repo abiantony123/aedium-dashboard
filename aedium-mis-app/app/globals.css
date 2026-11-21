@@ -301,7 +301,8 @@ h2{font-size:21px;font-weight:400;margin:0;letter-spacing:-.005em}
   .big{font-size:28px}
   .biglbl{font-size:13px;margin-top:6px}
   .b-head,.e-head{flex-direction:column;align-items:stretch}
-  .b-head .acts{padding:0}
+  .b-head .acts{padding:0;flex-wrap:wrap}
+  .ahead{flex-wrap:wrap;gap:6px 14px}
   .b-head .acts .pill{flex:1}
   .b-kpis{grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
   .b-kpis label{font-size:13px;margin-bottom:6px}
