@@ -3,17 +3,18 @@ import type { Db } from "./supabase/server";
 import { all, isActive, type Line, type Stage } from "./data";
 import { assertCan } from "./rbac";
 import { who, type Actor } from "./agents/actions";
+import { instalmentMonths, type Basis } from "./construction";
 
 const IST = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
 export function fyOf(d: string) { const y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7)); const s = m >= 4 ? y : y - 1; return { label: `${s}-${String((s + 1) % 100).padStart(2, "0")}`, start: `${s}-04-01`, end: `${s + 1}-03-31` }; }
 const addMonths = (ym: string, n: number) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7); };
 const isInstalment = (s: { stage: string | null }) => /instal|monthly|construction stage/i.test(s.stage ?? "");
 
-type PlanLine = Pick<Line, "project_number" | "studio" | "client_name" | "end_date" | "escalation_clause" | "yet_to_bill_amount" | "split_value" | "status" | "row_no" | "project_name" | "start_date" | "billed_amount" | "id" | "sl_no" | "financial_year" | "billed_pct" | "design_value" | "construction_value" | "project_type" | "project_stage" | "spoc">;
+type PlanLine = Pick<Line, "project_number" | "studio" | "client_name" | "end_date" | "escalation_clause" | "yet_to_bill_amount" | "split_value" | "status" | "row_no" | "project_name" | "start_date" | "billed_amount" | "id" | "sl_no" | "financial_year" | "billed_pct" | "design_value" | "construction_value" | "project_type" | "project_stage" | "spoc" | "contract_validity">;
 
 async function base(sb: Db, studio: string | null, client: string | null = null) {
   const [lines, stages] = await Promise.all([
-    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
+    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
   ]);
   const pns = client ? new Set(lines.filter((l) => l.client_name === client).map((l) => l.project_number)) : null;
@@ -41,12 +42,14 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
     if (isInstalment(s)) { const k = key(s.project_number, s.studio); inst.set(k, [...(inst.get(k) ?? []), s]); }
     else row(s.studio).design_pending += s.fee ?? 0;
   }
-  for (const xs of inst.values()) {
+  const validity = new Map(lines.map((l) => [key(l.project_number, l.studio), l.contract_validity]));
+  const timing: Record<Basis, number> = { stage: 0, contract: 0, assumed: 0 };
+  for (const [k, xs] of inst.entries()) {
     xs.sort((a, b) => a.seq - b.seq);
     let slot = 0;
     for (const s of xs) {
       if (slot >= months.length) break;
-      if ((s.pct ?? 0) > 0.05) { const n = Number((s.stage ?? "").match(/(\d+)\s*(?:months|monthly|instal)/i)?.[1]) || 36; row(s.studio).construction_in_fy += ((s.fee ?? 0) / n) * (months.length - slot); slot = months.length; }
+      if ((s.pct ?? 0) > 0.05) { const { months: n, basis } = instalmentMonths(s.stage, validity.get(k)); timing[basis]++; row(s.studio).construction_in_fy += ((s.fee ?? 0) / n) * Math.min(months.length - slot, n); slot = months.length; }
       else { row(s.studio).construction_in_fy += s.fee ?? 0; slot++; }
     }
   }
@@ -60,7 +63,7 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
   return {
     fy: fy.label, today, months_left: months.length, studio: studio ?? "All",
     total: { billed_ytd: sum((r) => r.billed_ytd), design_pending: sum((r) => r.design_pending), construction_in_fy: sum((r) => r.construction_in_fy), outlook: sum((r) => r.outlook), target, gap: target != null ? target - sum((r) => r.outlook) : null },
-    rows,
+    rows, timing,
     method: "Billed YTD = stages billed since 1 April. Design pending = unbilled milestone stages on active lines (billable this FY if delivered). Construction = unbilled monthly instalments that fall before 31 March, one per month.",
   };
 }

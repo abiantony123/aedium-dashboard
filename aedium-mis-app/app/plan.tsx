@@ -39,6 +39,7 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         <section className="card p-target">
           <h2>FY target</h2>
           <p className="note">{plan.method}</p>
+          <p className="note">Construction timing: {plan.timing.stage} from the stage wording, {plan.timing.contract} from the contract validity{plan.timing.assumed ? `, ${plan.timing.assumed} assumed at 36 months (no duration recorded)` : ""}.</p>
           {can(role, "plan.target") ? (
             <form className="p-form" onSubmit={(e) => { e.preventDefault(); const v = Number(target); if (v > 0) run(saveTarget({ fy: plan.fy, studio: studio ?? "All", target: v * 1e5 })); }}>
               <label htmlFor="p-target">Target for {studio ?? "the firm"} (₹ lakh)</label>

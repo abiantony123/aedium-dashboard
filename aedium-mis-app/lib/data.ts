@@ -1,10 +1,11 @@
 import type { Db as SupabaseClient } from "./supabase/server";
 import { daysBetween } from "./format";
+import { instalmentMonths } from "./construction";
 
 // ---------- row types (match supabase/migrations) ----------
 export type Line = {
   id: number; row_no: number; sl_no: string | null; financial_year: string | null; project_number: string;
-  client_name: string | null; project_name: string | null; location: string | null; studio: string | null; project_type: string | null;
+  client_name: string | null; project_name: string | null; location: string | null; contract_validity: string | null; studio: string | null; project_type: string | null;
   start_date: string | null; end_date: string | null; escalation_clause: string | null;
   split_value: number | null; billed_pct: number | null; billed_amount: number | null;
   yet_to_bill_amount: number | null; design_value: number | null; construction_value: number | null;
@@ -44,7 +45,7 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
 
 export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null) {
   const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff] = await Promise.all([
-    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
+    all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
     all<OpenInvoice>(sb, "v_open_invoices", "invoice_id,invoice_number,customer_name,project_name,project_number,studio,date,due_date,total,balance,days_overdue,bucket", "invoice_id"),
     all<Invoice>(sb, "zoho_invoices", "invoice_id,invoice_number,salesorder_id,date,total,balance", "invoice_id"),
@@ -201,8 +202,8 @@ export function build(r: Raw) {
       if (slot >= 12) break;
       if ((s.pct ?? 0) > 0.05) {
         // One row holding the whole construction fee ("payable monthly over 36 months"): spread it.
-        const n = Number((s.stage ?? "").match(/(\d+)\s*(?:months|monthly|instal)/i)?.[1]) || 36;
-        for (let i = slot; i < 12; i++) committed[i] += (s.fee ?? 0) / n;
+        const n = instalmentMonths(s.stage, lineByKey.get(lineKey(s.project_number, s.studio))?.contract_validity).months;
+        for (let i = slot; i < Math.min(12, slot + n); i++) committed[i] += (s.fee ?? 0) / n;
         slot = 12;
       } else committed[slot++] += s.fee ?? 0;
     }
