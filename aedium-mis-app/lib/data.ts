@@ -20,8 +20,14 @@ export type Stage = {
 export type OpenInvoice = {
   invoice_id: string; invoice_number: string; customer_name: string | null; project_name: string | null; project_number: string | null;
   studio: string | null; date: string; due_date: string; total: number; balance: number; days_overdue: number; bucket: string;
+  reference_number?: string | null; line_items?: { description?: string; amount?: number; project_number?: string; stage_seq?: number }[];
+  client_name?: string | null;
 };
-export type Invoice = { invoice_id: string; invoice_number: string; salesorder_id: string | null; date: string; total: number; balance: number };
+export type Invoice = {
+  invoice_id: string; invoice_number: string; salesorder_id: string | null; reference_number?: string | null;
+  date: string; total: number; balance: number;
+  line_items?: { description?: string; amount?: number; project_number?: string; stage_seq?: number }[];
+};
 export type Payment = { payment_id: string; payment_number: string | null; customer_id: string | null; date: string; amount: number; tax_amount_withheld: number; invoices: { invoice_id: string }[] };
 export type SalesOrder = { salesorder_id: string; project_name: string | null; project_number: string | null; studio: string | null; total: number | null };
 export type Decision = { agent: string; ref: string; decision: string; created_at: string; actor_email: string | null };
@@ -44,11 +50,11 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
 }
 
 export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null) {
-  const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan] = await Promise.all([
+  const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan, cplanFallback] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
-    all<OpenInvoice>(sb, "v_open_invoices", "invoice_id,invoice_number,customer_name,project_name,project_number,studio,date,due_date,total,balance,days_overdue,bucket", "invoice_id"),
-    all<Invoice>(sb, "zoho_invoices", "invoice_id,invoice_number,salesorder_id,date,total,balance", "invoice_id"),
+    all<OpenInvoice>(sb, "v_open_invoices", "invoice_id,invoice_number,customer_name,project_name,project_number,studio,date,due_date,total,balance,days_overdue,bucket,reference_number,line_items", "invoice_id"),
+    all<Invoice>(sb, "zoho_invoices", "invoice_id,invoice_number,salesorder_id,reference_number,date,total,balance,line_items", "invoice_id"),
     all<Payment>(sb, "zoho_payments", "payment_id,payment_number,customer_id,date,amount,tax_amount_withheld,invoices", "payment_id"),
     all<SalesOrder>(sb, "zoho_sales_orders", "salesorder_id,project_name,project_number,studio,total", "salesorder_id"),
     sb.from("agent_decisions").select("agent,ref,decision,created_at,actor_email").order("created_at", { ascending: false }).limit(200),
@@ -56,11 +62,38 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
     sb.from("import_runs").select("id,source,finished_at,ok,counts,issues,report_month").order("id", { ascending: false }).limit(5),
     sb.from("staff").select("id", { count: "exact", head: true }),
     sb.from("construction_plan").select("project_number,studio,start_month,months"),   // optional table: absent until its migration is run
+    sb.from("agent_decisions").select("ref,note").eq("agent", "construction_plan").eq("decision", "approved").order("id"),
   ]);
+  const lineByPn = new Map<string, Line>();
+  for (const l of lines) if (!lineByPn.has(l.project_number)) lineByPn.set(l.project_number, l);
+  const enrichedOpen: OpenInvoice[] = open.map((i) => {
+    const li = i.line_items?.[0];
+    const pn = i.project_number ?? li?.project_number ?? i.reference_number ?? null;
+    const descStudio = li?.description?.split("|")[0]?.trim() || null;
+    const matchedLine = (pn && descStudio ? lines.find((l) => l.project_number === pn && l.studio === descStudio) : null) ?? (pn ? lineByPn.get(pn) : undefined);
+    return {
+      ...i,
+      project_number: pn,
+      studio: i.studio ?? descStudio ?? matchedLine?.studio ?? null,
+      project_name: i.project_name ?? matchedLine?.project_name ?? i.customer_name,
+      client_name: matchedLine?.client_name ?? i.customer_name,
+    };
+  });
+  const cplanMerged = new Map<string, { project_number: string; studio: string; start_month: string; months: number | null }>();
+  for (const d of cplanFallback.data ?? []) {
+    if (!d.note) continue;
+    try {
+      const p = JSON.parse(d.note) as { start_month?: string; months?: number | null };
+      if (!p.start_month) continue;
+      const [pn, st = ""] = String(d.ref).split("|");
+      cplanMerged.set(`${pn}|${st}`, { project_number: pn, studio: st, start_month: p.start_month, months: p.months ?? null });
+    } catch { /* ignore malformed note */ }
+  }
+  for (const c of (cplan.data ?? []) as NonNullable<Raw["cplan"]>) cplanMerged.set(`${c.project_number}|${c.studio ?? ""}`, c);
   const raw: Raw = {
-    lines, stages, open, invoices, payments, sos,
+    lines, stages, open: enrichedOpen, invoices, payments, sos,
     decisions: (decisions.data ?? []) as Decision[], events: (events.data ?? []) as Event[],
-    runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0, cplan: (cplan.data ?? []) as NonNullable<Raw["cplan"]>,
+    runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0, cplan: [...cplanMerged.values()],
   };
   const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort();
   const inStudio = studio ? filterStudio(raw, studio) : raw;
@@ -69,17 +102,17 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
   return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, clients };
 }
 
-// One client's slice. Zoho rows follow the project number on their sales order.
+// One client's slice. Zoho rows follow the project number on their sales order, invoice reference, or customer name.
 function filterClient(r: Raw, client: string): Raw {
   const pns = new Set(r.lines.filter((l) => l.client_name === client).map((l) => l.project_number));
   const soIds = new Set(r.sos.filter((s) => s.project_number && pns.has(s.project_number)).map((s) => s.salesorder_id));
-  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? ""));
+  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? "") || (i.reference_number && pns.has(i.reference_number)) || (i.line_items?.[0]?.project_number && pns.has(i.line_items[0].project_number)));
   const invIds = new Set(invoices.map((i) => i.invoice_id));
   return {
     ...r,
     lines: r.lines.filter((l) => l.client_name === client),
     stages: r.stages.filter((s) => pns.has(s.project_number)),
-    open: r.open.filter((i) => i.project_number && pns.has(i.project_number)),
+    open: r.open.filter((i) => (i.project_number && pns.has(i.project_number)) || i.customer_name?.toLowerCase() === client.toLowerCase()),
     invoices, sos: r.sos.filter((s) => soIds.has(s.salesorder_id)),
     payments: r.payments.filter((p) => p.invoices?.some((x) => invIds.has(x.invoice_id))),
   };
@@ -110,10 +143,10 @@ export function clientTree(lines: Line[]): ClientNode[] {
   }).sort((a, b) => b.contract - a.contract);
 }
 
-// One studio's slice: tracker rows by studio, Zoho rows through their sales order's studio.
+// One studio's slice: tracker rows by studio, Zoho rows through their sales order's studio or invoice line prefix.
 function filterStudio(r: Raw, studio: string): Raw {
   const soIds = new Set(r.sos.filter((s) => s.studio === studio).map((s) => s.salesorder_id));
-  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? ""));
+  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? "") || (i.line_items?.[0]?.description ?? "").startsWith(studio + " |"));
   const invIds = new Set(invoices.map((i) => i.invoice_id));
   return {
     ...r,
@@ -232,14 +265,32 @@ export function build(r: Raw) {
     invoice_trigger: [...byStatus("client_approved"), ...byStatus("complete")].filter((s) => !decided.has(`invoice_trigger:${s.id}`)).map((s) => ({ ...s, label: label(s) })),
     contract_watch: expiring.filter((l) => !decided.has(`contract_watch:${l.row_no}`)),
   };
-  const collection = queues.collections[0] ?? null;
-  const invoiceTrigger = queues.invoice_trigger[0] ?? null;
-  const contractWatch = queues.contract_watch[0] ?? null;
+  const collection = queues.collections.at(0) ?? null;
+  const invoiceTrigger = queues.invoice_trigger.at(0) ?? null;
+  const contractWatch = queues.contract_watch.at(0) ?? null;
   const notified = byStatus("finance_notified");
   const oldestNotifiedDays = notified.length ? Math.max(...notified.map((s) => (s.last_event_at ? daysBetween(s.last_event_at, today) : 0))) : 0;
 
   const soById = new Map(r.sos.map((s) => [s.salesorder_id, s]));
-  const invoiceProject = new Map(r.invoices.map((i) => [i.invoice_id, soById.get(i.salesorder_id ?? "")?.project_name ?? null]));
+  const invoiceMap = new Map(r.invoices.map((i) => [i.invoice_id, i]));
+  const lineByPn = new Map<string, Line>();
+  for (const l of r.lines) if (!lineByPn.has(l.project_number)) lineByPn.set(l.project_number, l);
+  const invoiceProject = new Map(r.invoices.map((i) => {
+    const pn = soById.get(i.salesorder_id ?? "")?.project_number ?? i.reference_number ?? i.line_items?.[0]?.project_number ?? null;
+    return [i.invoice_id, soById.get(i.salesorder_id ?? "")?.project_name ?? (pn ? lineByPn.get(pn)?.project_name : null) ?? null];
+  }));
+  const payments = [...r.payments].sort((a, b) => b.date.localeCompare(a.date)).map((p) => {
+    const invId = p.invoices?.[0]?.invoice_id;
+    const inv = invId ? invoiceMap.get(invId) : undefined;
+    const so = inv?.salesorder_id ? soById.get(inv.salesorder_id) : undefined;
+    const pn = so?.project_number ?? inv?.reference_number ?? inv?.line_items?.[0]?.project_number ?? null;
+    const line = pn ? lineByPn.get(pn) : undefined;
+    return {
+      ...p,
+      invoice_number: inv?.invoice_number ?? null,
+      project: so?.project_name ?? line?.project_name ?? line?.client_name ?? pn ?? null,
+    };
+  });
   const lastPay = [...monthPays].sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
 
   const timeline = [...active].sort((a, b) => (b.split_value ?? 0) - (a.split_value ?? 0)).slice(0, 6);
@@ -249,7 +300,7 @@ export function build(r: Raw) {
     today, reportMonth, lastRun, staffCount: r.staffCount, zohoIsSample: sourceIsMock,
     prevMonth,
     kpi: { contract, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: r.open.length, activeLines: active.length },
-    open: r.open, old, pipeline, expiring, mismatches, studios, months, committed, since, queues,
+    open: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, queues,
     agents: {
       collection, contractWatch,
       invoiceTrigger,

@@ -43,9 +43,20 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
     ]);
     const setupError = errors.length ? `Some sections need the latest SQL migrations (supabase/migrations): ${errors.join(" · ")}` : null;
     const fs = findings(data);
+    const ruleText = ruleNarrative(fs);
+    if (!see("cash") && !see("finance")) {
+      data.open = []; data.old = []; data.pipeline = []; data.openStages = []; data.payments = [];
+    }
+    if (!see("agents")) {
+      data.queues = { collections: [], invoice_trigger: [], contract_watch: [] };
+      data.agents = { collection: null, contractWatch: null, invoiceTrigger: null, notifiedCount: 0, oldestNotifiedDays: 0 };
+    }
+    if (!see("brief")) {
+      data.kpi = { contract: 0, yetToBill: 0, designYtb: 0, billedMonth: 0, billedPrevMonth: 0, collectedMonth: 0, outstanding: 0, late: 0, openCount: 0, activeLines: data.kpi.activeLines };
+    }
     return (
       <Dashboard data={data} email={user.email} role={user.role} roleStudio={user.studio} tabs={tabsFor(user.role)} origin={origin}
-        keys={keys} runs={runs} setupError={setupError} findings={fs} ruleText={ruleNarrative(fs)}
+        keys={keys} runs={runs} setupError={setupError} findings={fs} ruleText={ruleText}
         plan={plan} escalations={esc} projection={proj} month={month} financeQueue={queue} pos={pos} notifications={notes} />
     );
   } catch (e) {

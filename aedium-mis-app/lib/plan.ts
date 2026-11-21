@@ -2,13 +2,15 @@
 import type { Db } from "./supabase/server";
 import { all, isActive, type Line, type Stage } from "./data";
 import { assertCan } from "./rbac";
-import { who, type Actor } from "./agents/actions";
+import { who, notify, type Actor } from "./agents/actions";
+import { inr, niceDate } from "./format";
 import { instalmentMonths, instalmentsInWindow, monthsBetween, type Basis } from "./construction";
 
 const IST = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
 export function fyOf(d: string) { const y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7)); const s = m >= 4 ? y : y - 1; return { label: `${s}-${String((s + 1) % 100).padStart(2, "0")}`, start: `${s}-04-01`, end: `${s + 1}-03-31` }; }
 const addMonths = (ym: string, n: number) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7); };
 const isInstalment = (s: { stage: string | null }) => /instal|monthly|construction stage/i.test(s.stage ?? "");
+const isAdvance = (s: { stage: string | null }) => !isInstalment(s) && /advance|appointment|mobilis|upon signing|confirmation of order/i.test(s.stage ?? "");
 
 type PlanLine = Pick<Line, "project_number" | "studio" | "client_name" | "end_date" | "escalation_clause" | "yet_to_bill_amount" | "split_value" | "status" | "row_no" | "project_name" | "start_date" | "billed_amount" | "id" | "sl_no" | "financial_year" | "billed_pct" | "design_value" | "construction_value" | "project_type" | "project_stage" | "spoc" | "contract_validity">;
 
@@ -31,8 +33,8 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
   const activeKeys = new Set(active.map((l) => key(l.project_number, l.studio)));
   const months: string[] = []; for (let m = addMonths(today.slice(0, 7), 1); m <= fy.end.slice(0, 7); m = addMonths(m, 1)) months.push(m);
 
-  const byStudio = new Map<string, { studio: string; billed_ytd: number; design_pending: number; construction_in_fy: number }>();
-  const row = (s: string | null) => { const k = s ?? "Unassigned"; const r = byStudio.get(k) ?? { studio: k, billed_ytd: 0, design_pending: 0, construction_in_fy: 0 }; byStudio.set(k, r); return r; };
+  const byStudio = new Map<string, { studio: string; billed_ytd: number; advance_pending: number; design_pending: number; construction_in_fy: number }>();
+  const row = (s: string | null) => { const k = s ?? "Unassigned"; const r = byStudio.get(k) ?? { studio: k, billed_ytd: 0, advance_pending: 0, design_pending: 0, construction_in_fy: 0 }; byStudio.set(k, r); return r; };
   for (const s of stages) {
     if (s.billed_on && s.billed_on >= fy.start && s.billed_on <= today) row(s.studio).billed_ytd += s.fee ?? 0;
   }
@@ -40,6 +42,7 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
   for (const s of stages) {
     if (s.billed_on || s.workflow_status === "invoiced" || !activeKeys.has(key(s.project_number, s.studio))) continue;
     if (isInstalment(s)) { const k = key(s.project_number, s.studio); inst.set(k, [...(inst.get(k) ?? []), s]); }
+    else if (isAdvance(s)) row(s.studio).advance_pending += s.fee ?? 0;
     else row(s.studio).design_pending += s.fee ?? 0;
   }
   const validity = new Map(lines.map((l) => [key(l.project_number, l.studio), l.contract_validity]));
@@ -68,23 +71,40 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
   }
   const { data: targets } = await sb.from("fy_targets").select("studio,target").eq("fy", fy.label);
   const tmap = new Map((targets ?? []).map((t) => [t.studio, Number(t.target)]));
-  const rows = [...byStudio.values()].filter((r) => r.billed_ytd || r.design_pending || r.construction_in_fy)
-    .map((r) => ({ ...r, target: tmap.get(r.studio) ?? null, outlook: r.billed_ytd + r.design_pending + r.construction_in_fy }))
+  const rows = [...byStudio.values()].filter((r) => r.billed_ytd || r.advance_pending || r.design_pending || r.construction_in_fy)
+    .map((r) => ({ ...r, target: tmap.get(r.studio) ?? null, outlook: r.billed_ytd + r.advance_pending + r.design_pending + r.construction_in_fy }))
     .sort((a, b) => b.outlook - a.outlook);
   const sum = (f: (r: (typeof rows)[number]) => number) => rows.reduce((a, r) => a + f(r), 0);
   const target = tmap.get(studio ?? "All") ?? null;
   return {
     fy: fy.label, today, months_left: months.length, studio: studio ?? "All",
-    total: { billed_ytd: sum((r) => r.billed_ytd), design_pending: sum((r) => r.design_pending), construction_in_fy: sum((r) => r.construction_in_fy), outlook: sum((r) => r.outlook), target, gap: target != null ? target - sum((r) => r.outlook) : null },
+    total: { billed_ytd: sum((r) => r.billed_ytd), advance_pending: sum((r) => r.advance_pending), design_pending: sum((r) => r.design_pending), construction_in_fy: sum((r) => r.construction_in_fy), outlook: sum((r) => r.outlook), target, gap: target != null ? target - sum((r) => r.outlook) : null },
     rows, timing, confirmed, construction_ready, construction: construction.sort((a, b) => b.fee - a.fee).slice(0, 15),
-    method: "Billed YTD = stages billed since 1 April. Design pending = unbilled milestone stages on active lines (billable this FY if delivered). Construction = unbilled monthly instalments that fall before 31 March, one per month.",
+    method: "Billed YTD = stages billed since 1 April. Advance = unbilled appointment / signing fees. Design pending = unbilled milestone deliverables on active lines. Construction = unbilled monthly instalments before 31 March.",
   };
 }
 
-// Confirmed construction start per line. The table is optional: until its migration is run this reads as "none set".
+// Confirmed construction start per line. Uses mis.construction_plan when migrated, and falls back to
+// mis.agent_decisions (agent = 'construction_plan') so saving works out-of-the-box before manual SQL runs.
 async function constructionPlan(sb: Db) {
-  const { data, error } = await sb.from("construction_plan").select("project_number,studio,start_month,months");
-  return { ready: !error, map: new Map((data ?? []).map((c) => [`${c.project_number}|${c.studio ?? ""}`, c as { project_number: string; studio: string; start_month: string; months: number | null }])) };
+  const [{ data: rows }, { data: fallback }] = await Promise.all([
+    sb.from("construction_plan").select("project_number,studio,start_month,months"),
+    sb.from("agent_decisions").select("ref,note").eq("agent", "construction_plan").eq("decision", "approved").order("id"),
+  ]);
+  const map = new Map<string, { project_number: string; studio: string; start_month: string; months: number | null }>();
+  for (const d of fallback ?? []) {
+    if (!d.note) continue;
+    try {
+      const p = JSON.parse(d.note) as { start_month?: string; months?: number | null };
+      if (!p.start_month) continue;
+      const [pn, st = ""] = String(d.ref).split("|");
+      map.set(`${pn}|${st}`, { project_number: pn, studio: st, start_month: p.start_month, months: p.months ?? null });
+    } catch { /* ignore malformed note */ }
+  }
+  for (const c of rows ?? []) {
+    map.set(`${c.project_number}|${c.studio ?? ""}`, c as { project_number: string; studio: string; start_month: string; months: number | null });
+  }
+  return { ready: true, map };
 }
 export async function setConstruction(sb: Db, actor: Actor, r: { project_number: string; studio: string | null; start: string; months: number | null }) {
   assertCan(actor.role, "plan.construction");
@@ -92,7 +112,13 @@ export async function setConstruction(sb: Db, actor: Actor, r: { project_number:
   if (!/^\d{4}-\d{2}$/.test(r.start)) throw new Error("Choose a start month.");
   if (r.months != null && !(Number.isInteger(r.months) && r.months >= 1 && r.months <= 120)) throw new Error("Duration must be 1 to 120 months.");
   const { error } = await sb.from("construction_plan").upsert({ project_number: r.project_number, studio: r.studio ?? "", start_month: `${r.start}-01`, months: r.months, updated_by: who(actor), updated_at: new Date().toISOString() });
-  if (error) throw new Error(/construction_plan/.test(error.message) ? "Run supabase/migrations/20261121000000_construction_plan.sql in Supabase first." : error.message);
+  if (error) {
+    const fb = await sb.from("agent_decisions").insert({
+      agent: "construction_plan", ref: `${r.project_number}|${r.studio ?? ""}`, decision: "approved",
+      note: JSON.stringify({ start_month: `${r.start}-01`, months: r.months }), actor: actor.id, actor_email: who(actor),
+    });
+    if (fb.error) throw new Error(fb.error.message);
+  }
 }
 
 // Escalation: rate parsed from the clause text; applied per started year past the contract end date on the unbilled amount.
@@ -108,10 +134,36 @@ export function escalationOf(l: Pick<Line, "end_date" | "escalation_clause" | "y
 export async function escalations(sb: Db, studio: string | null, client: string | null = null) {
   const { lines } = await base(sb, studio, client);
   const today = IST();
+  const { data: decided } = await sb.from("agent_decisions").select("ref,decision").eq("agent", "escalation").order("id");
+  const status = new Map((decided ?? []).map((d) => [d.ref as string, d.decision === "approved" ? ("proposed" as const) : ("dismissed" as const)]));   // latest decision wins
   return lines.filter((l) => isActive(l as Line)).map((l) => ({ l, e: escalationOf(l, today) }))
     .filter((x) => x.e && (x.e.periods > 0 || x.e.days_past_end > -90))
     .map(({ l, e }) => ({ row_no: l.row_no, project_number: l.project_number, client_name: l.client_name, studio: l.studio, end_date: l.end_date, clause: l.escalation_clause, ...e! }))
-    .sort((a, b) => b.uplift - a.uplift || b.days_past_end - a.days_past_end);
+    .sort((a, b) => b.uplift - a.uplift || b.days_past_end - a.days_past_end)
+    .map((x) => ({ ...x, status: status.get(`esc:${x.row_no}`) ?? null }));
+}
+
+// Escalation workflow: a notice is drafted for review and, once someone proposes it, recorded. Nothing is sent or applied
+// to any figure (rate, effective date and compounding are still to be confirmed with Aedium).
+export async function escalationDraft(sb: Db, rowNo: number) {
+  const { data: l } = await sb.from("project_lines").select("*").eq("row_no", rowNo).maybeSingle();
+  if (!l) throw new Error(`No project line at Summary row ${rowNo}.`);
+  const e = escalationOf(l);
+  if (!e) throw new Error("This line has no escalation clause, end date or unbilled amount.");
+  const what = `${l.project_name ?? l.project_number} (${l.studio ?? "all studios"})`;
+  const body = e.periods
+    ? `Dear ${l.client_name ?? "team"},\n\nOur appointment for ${what} ended on ${niceDate(l.end_date)}. Its escalation clause reads: "${l.escalation_clause}".\n\n${inr(e.yet_to_bill)} remains to be billed. ${e.periods} year${e.periods > 1 ? "s have" : " has"} started since the end date, so the clause adds an estimated ${inr(e.uplift)} (${Math.round(e.rate * 100)}% a year), bringing the balance to about ${inr(e.yet_to_bill + e.uplift)}.\n\nPlease confirm the revised amount so we can plan the remaining stages and invoice accordingly.\n\nRegards,\nAedium Planning & MIS\n\n[Draft: estimate from the clause text. Confirm the rate and effective date against the PO before sending.]`
+    : `Dear ${l.client_name ?? "team"},\n\nA courtesy note on ${what}. The appointment runs to ${niceDate(l.end_date)} and its escalation clause reads: "${l.escalation_clause}". ${inr(e.yet_to_bill)} remains to be billed; fees for work after ${niceDate(l.end_date)} step up by ${Math.round(e.rate * 100)}% a year.\n\nWe would like to plan the remaining stages before then. Could we agree the timing this month?\n\nRegards,\nAedium Planning & MIS\n\n[Draft: confirm the rate against the PO before sending.]`;
+  return { to: l.client_name ?? "Client", subject: `Escalation notice: ${l.project_name ?? l.project_number} (${l.studio ?? ""})`, body };
+}
+export async function decideEscalation(sb: Db, actor: Actor, rowNo: number, decision: "approved" | "dismissed") {
+  assertCan(actor.role, "agent.contract_watch");
+  const { data: l } = await sb.from("project_lines").select("client_name,studio,project_number").eq("row_no", rowNo).maybeSingle();
+  if (!l) throw new Error(`No project line at Summary row ${rowNo}.`);
+  if (actor.role === "project_manager" && actor.studio && l.studio !== actor.studio) throw new Error(`You can only handle ${actor.studio} lines.`);
+  const { error } = await sb.from("agent_decisions").insert({ agent: "escalation", ref: `esc:${rowNo}`, decision, actor: actor.id, actor_email: who(actor) });
+  if (error) throw new Error(error.message);
+  if (decision === "approved") await notify(sb, "admin", `Escalation proposed: ${l.client_name ?? l.project_number} · ${l.studio ?? ""}`, "A notice was drafted for the client. Send it from your mailbox after confirming the rate against the PO.", "plan", `esc:${rowNo}`);
 }
 
 export async function setTarget(sb: Db, actor: Actor, fy: string, studio: string, target: number) {
@@ -162,9 +214,14 @@ export async function projection(sb: Db, month: string, studio: string | null, c
     return { ...r, stage: s?.stage ?? null, status: done ? "billed" : s?.workflow_status ?? "manual" };
   });
   return {
-    month: m, weeks, totals: { forecast, actual, variance: actual - forecast, carry_forward: carry.reduce((a, r) => a + Number(r.amount), 0), unplanned: unplanned.reduce((a, u) => a + u.amount, 0) },
+    month: m, weeks, totals: {
+      forecast, actual, variance: actual - forecast, carry_forward: carry.reduce((a, r) => a + Number(r.amount), 0),
+      unplanned: unplanned.reduce((a, u) => a + u.amount, 0),
+      unplanned_only: unplanned.filter((u) => u.kind === "unplanned").reduce((a, u) => a + u.amount, 0),
+      new_project: unplanned.filter((u) => u.kind === "new_project").reduce((a, u) => a + u.amount, 0),
+    },
     rows: rowStatus, carry_forward: carry, unplanned,
-    method: "Forecast rows are entered per week. Actual = stages billed this month in the tracker plus invoices raised in the app. Carry-forward = last month's forecast stages still not billed. Unplanned = billed this month but not forecast.",
+    method: "Forecast rows are entered per week. Actual = stages billed this month in the tracker plus invoices raised in the app. Carry-forward = last month's forecast stages still not billed. Unplanned = billed this month on existing projects outside forecast; New project (BD) = first stage billed without forecast.",
   };
 }
 

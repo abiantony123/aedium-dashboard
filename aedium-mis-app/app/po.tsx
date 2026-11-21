@@ -3,7 +3,7 @@ import { useState, useTransition } from "react";
 import { inr, niceDate } from "@/lib/format";
 import { can, type Role } from "@/lib/rbac";
 import type { listPos, getPo } from "@/lib/po";
-import { loadPo, reviewPoAction, poExcelRows } from "./actions";
+import { loadPo, reviewPoAction, poExcelRows, stageSamplePo } from "./actions";
 
 type Pos = Awaited<ReturnType<typeof listPos>>;
 type Full = Awaited<ReturnType<typeof getPo>>;
@@ -16,6 +16,10 @@ export default function PoIntake({ pos, role, run, pending, toast }: { pos: Pos;
   const [note, setNote] = useState("");
   const [loading, startLoad] = useTransition();
   const pendingPos = pos.filter((p) => p.status === "pending_review");
+  const sample = pos.filter((p) => p.po_number === "DEMO-PO-2026-001");
+  const hasSample = sample.length > 0;
+  const sampleApproved = sample.some((p) => p.status === "approved");
+  const hasV2 = sample.some((p) => p.version > 1);
   const show = (id: number) => startLoad(async () => { const r = await loadPo(id); if (r.ok) { setOpen(r.po); setPn(r.po.header.project_number ?? ""); setNote(""); } else toast(r.message); });
   const copyRows = (id: number) => startLoad(async () => {
     const r = await poExcelRows(id);
@@ -26,7 +30,19 @@ export default function PoIntake({ pos, role, run, pending, toast }: { pos: Pos;
 
   return (
     <section className="card po-intake">
-      <div className="dhead"><h2>PO intake</h2><span className="note">Staged by an assistant (Claude, ChatGPT, Gemini) through Connect AI · {pendingPos.length} to review</span></div>
+      <div className="dhead">
+        <div>
+          <h2>PO intake</h2>
+          <span className="note">Staged by an assistant (Claude, ChatGPT, Gemini) through Connect AI · {pendingPos.length} to review</span>
+        </div>
+        {can(role, "po.stage") && (
+          <div className="f-acts">
+            {!hasSample && <button className="pill pink" disabled={pending} onClick={() => run(stageSamplePo("new"))}>Stage sample PO</button>}
+            {sampleApproved && !hasV2 && <button className="pill solid" disabled={pending} onClick={() => run(stageSamplePo("amendment"))}>Stage amendment v2</button>}
+            {hasSample && <button className="pill" disabled={pending} onClick={() => run(stageSamplePo("reset"))}>Reset sample PO</button>}
+          </div>
+        )}
+      </div>
       {pos.length ? pos.slice(0, 10).map((p) => {
         const checks = (p.checks as Check[] | null) ?? [];
         const failed = checks.filter((c) => !c.ok && c.severity === "error").length;

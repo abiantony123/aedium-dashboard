@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { inr, niceDate } from "@/lib/format";
 import { can, type Role } from "@/lib/rbac";
 import type { financeQueue } from "@/lib/finance";
@@ -10,7 +11,8 @@ type Q = Awaited<ReturnType<typeof financeQueue>>;
 type Run = (p: Promise<{ ok: boolean; message: string }>) => void;
 const daysSince = (at: string | null) => (at ? Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 86400000)) : 0);
 
-export default function FinanceTab({ queue, open, role, run, pending, zohoSample, onDraft }: { queue: Q; open: Dash["open"]; role: Role; run: Run; pending: boolean; zohoSample: boolean; onDraft: (stageId: number) => void }) {
+export default function FinanceTab({ queue, open, payments, role, run, pending, zohoSample, onDraft, toast }: { queue: Q; open: Dash["open"]; payments: Dash["payments"]; role: Role; run: Run; pending: boolean; zohoSample: boolean; onDraft: (stageId: number) => void; toast: (m: string) => void }) {
+  const router = useRouter();
   const [inv, setInv] = useState<{ id: number; number: string; amount: string } | null>(null);
   const [pay, setPay] = useState<{ number: string; amount: string; tds: string; balance: number } | null>(null);
   const waiting = queue.filter((q) => q.workflow_status === "finance_notified");
@@ -57,6 +59,26 @@ export default function FinanceTab({ queue, open, role, run, pending, zohoSample
           )) : <div className="empty">No open invoices.</div>}
         </section>
       </div>
+
+      <section className="card f-mirror">
+        <div className="dhead">
+          <div>
+            <h2>Zoho Books mirror · Collections &amp; sync</h2>
+            <span className="note">Aedium Design · Zoho Books India Mirror · 30-day terms · {open.length} open invoice{open.length === 1 ? "" : "s"} · {payments.length} recorded payment{payments.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="f-acts">
+            <span className={`tag ${zohoSample ? "t-amber" : "t-green"}`}>{zohoSample ? "Mock mirror active" : "Live sync"}</span>
+            <button className="pill" onClick={() => { router.refresh(); toast("Zoho Books mirror synced"); }}>Sync Zoho mirror</button>
+          </div>
+        </div>
+        {payments.length ? payments.slice(0, 12).map((p) => (
+          <div className="frow" key={p.payment_id}>
+            <div className="t"><b>{p.payment_number ?? p.payment_id} · {p.project ?? p.invoice_number ?? "Receipt"}</b><small>{niceDate(p.date)}{p.invoice_number ? ` · matched to ${p.invoice_number}` : ""}</small></div>
+            <div className="f-amt num"><b>{inr(p.amount)}</b><small>{p.tax_amount_withheld ? `${inr(p.tax_amount_withheld)} TDS withheld` : "No TDS"}</small></div>
+            <span className="tag t-green">Matched</span>
+          </div>
+        )) : <div className="empty">No collections recorded yet in this view.</div>}
+      </section>
 
       {inv && (
         <div className="f-modal" role="dialog" aria-modal="true" aria-labelledby="inv-t" onClick={(e) => { if (e.target === e.currentTarget) setInv(null); }}>

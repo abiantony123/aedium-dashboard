@@ -115,10 +115,13 @@ export type NarrativeT = z.infer<typeof Narrative>;
 
 export function ruleNarrative(fs: Finding[]): NarrativeT {
   const by = (id: string) => fs.find((x) => x.id === id);
+  const picked: Finding[] = [];
+  for (const x of fs) if (picked.length < 3 && !picked.some((p) => p.area === x.area)) picked.push(x);
+  for (const x of fs) if (picked.length < 3 && !picked.includes(x)) picked.push(x);
   return {
     brief_lead: fs[0]?.fact ?? "No findings yet.",
     brief_body: [by("billing_month"), by("yet_to_bill"), by("data_quality")].filter(Boolean).map((x) => x!.fact).join(" "),
-    decisions: fs.slice(0, 3).map((x) => ({ finding_id: x.id, tag: x.area[0].toUpperCase() + x.area.slice(1), meta: `Priority ${x.severity}`, title: x.action.label, body: x.fact })),
+    decisions: picked.map((x) => ({ finding_id: x.id, tag: x.area[0].toUpperCase() + x.area.slice(1), meta: `Priority ${x.severity}`, title: x.action.label, body: x.fact })),
     collections_note: [by("finance_waiting"), by("over_90")].filter(Boolean).map((x) => x!.fact).join(" ") || "Nothing is waiting on Collections.",
     studios_note: by("payroll_gap")?.fact ?? "",
     ask_starter: by("over_90")?.fact ?? "No invoices are more than 90 days overdue.",

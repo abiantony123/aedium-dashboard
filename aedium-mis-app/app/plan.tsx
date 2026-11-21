@@ -4,7 +4,7 @@ import { inr, monthLabel, niceDate } from "@/lib/format";
 import { can, type Role } from "@/lib/rbac";
 import type { fyPlan, escalations, projection } from "@/lib/plan";
 import type { Dash } from "@/lib/data";
-import { saveTarget, addForecast, removeForecast, autofillForecast, saveConstruction } from "./actions";
+import { saveTarget, addForecast, removeForecast, autofillForecast, saveConstruction, setEscalation } from "./actions";
 
 type Plan = Awaited<ReturnType<typeof fyPlan>>;
 type Esc = Awaited<ReturnType<typeof escalations>>;
@@ -31,8 +31,8 @@ function ConsRow({ c, editable, pending, run }: { c: ConsItem; editable: boolean
   );
 }
 
-export default function PlanTab({ plan, esc, proj, month, role, studio, openStages, run, pending, setMonth }:
-  { plan: Plan | null; esc: Esc; proj: Proj | null; month: string; role: Role; studio: string | null; openStages: Dash["openStages"]; run: Run; pending: boolean; setMonth: (m: string) => void }) {
+export default function PlanTab({ plan, esc, proj, month, role, studio, openStages, run, pending, setMonth, onEscDraft }:
+  { plan: Plan | null; esc: Esc; proj: Proj | null; month: string; role: Role; studio: string | null; openStages: Dash["openStages"]; run: Run; pending: boolean; setMonth: (m: string) => void; onEscDraft: (rowNo: number) => void }) {
   const [target, setTarget] = useState(plan?.total.target != null ? String(Math.round(plan.total.target / 1e5)) : "");
   const [form, setForm] = useState({ stage: "", week: "1", amount: "", description: "" });
   if (!plan || !proj) return <div className="banner">Plan needs the latest SQL migration (supabase/migrations/20261118000000_po_plan_finance_rbac.sql).</div>;
@@ -51,7 +51,7 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         <section className="mult p-fy">
           <div className="mhead"><span>FY {plan.fy} OUTLOOK</span><span>{plan.months_left} MONTHS LEFT</span></div>
           <div className="x num">{inr(t.outlook)}</div>
-          <div className="sub">Billed {inr(t.billed_ytd)} · design pending {inr(t.design_pending)} · construction {inr(t.construction_in_fy)}</div>
+          <div className="sub">Billed {inr(t.billed_ytd)}{t.advance_pending ? ` · advance ${inr(t.advance_pending)}` : ""} · design pending {inr(t.design_pending)} · construction {inr(t.construction_in_fy)}</div>
           <div className="mtrack"><i style={{ width: `${pct(t.outlook, t.target)}%` }} /></div>
           <div className="maxis"><span>0</span><span>{t.target != null ? `${pct(t.outlook, t.target)}% of target` : "No target set"}</span><span>{t.target != null ? inr(t.target) : "—"}</span></div>
           <div className="mnote">{t.target == null ? "Set a target to see the gap." : t.gap! > 0 ? `${inr(t.gap)} short of target even if every pending design stage is delivered this year.` : `Outlook clears the target by ${inr(-t.gap!)}.`}</div>
@@ -75,7 +75,7 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
           <div className="p-tr p-th" role="row"><span>Studio</span><span>Billed YTD</span><span>Design pending</span><span>Construction</span><span>Outlook</span><span>Target</span></div>
           {plan.rows.slice(0, 12).map((r) => (
             <div className="p-tr num" role="row" key={r.studio}>
-              <span>{r.studio}</span><span>{inr(r.billed_ytd)}</span><span>{inr(r.design_pending)}</span><span>{inr(r.construction_in_fy)}</span>
+              <span>{r.studio}</span><span>{inr(r.billed_ytd)}</span><span>{inr(r.design_pending)}{r.advance_pending > 0 && <small className="p-adv">+{inr(r.advance_pending)} adv.</small>}</span><span>{inr(r.construction_in_fy)}</span>
               <span className="p-bar"><i style={{ width: `${Math.min(100, (r.outlook / Math.max(plan.rows[0]?.outlook ?? 1, 1)) * 100)}%` }} />{inr(r.outlook)}</span>
               <span>{r.target != null ? inr(r.target) : "—"}</span>
             </div>
@@ -85,10 +85,9 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
 
       <section className="card p-cons">
         <div className="dhead"><h2>Construction start</h2><span className="note">Instalments count from the confirmed month. Without one, from next month.</span></div>
-        {!plan.construction_ready && <p className="note">To save start months, run <code>supabase/migrations/20261121000000_construction_plan.sql</code> in the Supabase SQL Editor.</p>}
         {plan.construction.length === 0 && <p className="note">No construction instalments are waiting on active lines.</p>}
         {plan.construction.map((c) => (
-          <ConsRow key={`${c.project_number}|${c.studio}`} c={c} editable={plan.construction_ready && can(role, "plan.construction")} pending={pending} run={run} />
+          <ConsRow key={`${c.project_number}|${c.studio}`} c={c} editable={can(role, "plan.construction")} pending={pending} run={run} />
         ))}
       </section>
 
@@ -105,9 +104,10 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         <div className="p-kpis num">
           <div><b>{inr(proj.totals.forecast)}</b><span>Forecast</span></div>
           <div><b>{inr(proj.totals.actual)}</b><span>Actual</span></div>
-          <div><b className={proj.totals.variance < 0 ? "t-pink" : "t-green"}>{proj.totals.variance >= 0 ? "+" : ""}{inr(proj.totals.variance)}</b><span>Variance</span></div>
+          <div><b className={proj.totals.variance < 0 ? "t-pink" : "t-green"}>{proj.totals.variance >= 0 ? "+" : ""}{inr(proj.totals.variance)}</b><span>Variance (Actual − Forecast)</span></div>
           <div><b>{inr(proj.totals.carry_forward)}</b><span>Carried from last month</span></div>
-          <div><b>{inr(proj.totals.unplanned)}</b><span>Unplanned / new project</span></div>
+          <div><b>{inr(proj.totals.unplanned_only)}</b><span>Unplanned</span></div>
+          <div><b>{inr(proj.totals.new_project)}</b><span>New project (BD)</span></div>
         </div>
         <div className="p-weeks">
           {proj.weeks.map((w) => (
@@ -157,7 +157,14 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         {esc.length ? esc.slice(0, 12).map((e) => (
           <div className="krow" key={e.row_no}>
             <div className="t"><b>{e.client_name ?? e.project_number} · {e.studio}</b><small>{e.clause} · ends {niceDate(e.end_date)} · {inr(e.yet_to_bill)} to bill</small></div>
-            {e.periods ? <span className="tag t-pink">+{inr(e.uplift)} · {e.periods} yr</span> : <span className="tag t-amber">Steps up {niceDate(e.next_step_up)}</span>}
+            <div className="eacts">
+              {e.status === "proposed" && <span className="tag t-green">Proposed</span>}
+              {e.status === "dismissed" && <span className="tag t-grey">Dismissed</span>}
+              {e.periods ? <span className="tag t-pink">+{inr(e.uplift)} · {e.periods} yr</span> : <span className="tag t-amber">Steps up {niceDate(e.next_step_up)}</span>}
+              <button className="pill" onClick={() => onEscDraft(e.row_no)}>Draft notice</button>
+              {can(role, "agent.contract_watch") && e.status !== "proposed" && <button className="pill pink" disabled={pending} onClick={() => run(setEscalation({ row_no: e.row_no, decision: "approved" }))}>Propose</button>}
+              {can(role, "agent.contract_watch") && !e.status && <button className="pill" disabled={pending} onClick={() => run(setEscalation({ row_no: e.row_no, decision: "dismissed" }))}>Dismiss</button>}
+            </div>
           </div>
         )) : <div className="empty">No active contract with an escalation clause is past or near its end date.</div>}
       </section>

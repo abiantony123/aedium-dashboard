@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Dash, ClientNode } from "@/lib/data";
 import { inr, monthLabel, shortMonth, niceDate, timeOf, greeting } from "@/lib/format";
-import { markStage, decide, signOut, getDraft } from "./actions";
+import { markStage, decide, signOut, getDraft, getEscalationDraft } from "./actions";
 import Ask from "./ask";
 import Connect, { type Run } from "./connect";
 import type { KeyInfo } from "@/lib/agents/keys";
@@ -16,6 +16,7 @@ import type { listPos } from "@/lib/po";
 import PlanTab from "./plan";
 import FinanceTab from "./finance";
 import MailTab from "./mail";
+import TrackerTab from "./tracker";
 import PoIntake from "./po";
 import Bell from "./bell";
 
@@ -55,6 +56,10 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const [tab, setTab] = useState<Tab>("brief");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [span, setSpan] = useState<6 | 12>(6);
+  const [studioMode, setStudioMode] = useState<"recorded" | "projected">("recorded");
+  const [simDays, setSimDays] = useState(21);
+  const [simUtil, setSimUtil] = useState(78);
+  const [simStaff, setSimStaff] = useState(d.staffCount || 90);
   const draftDialog = useRef<HTMLDialogElement>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -78,6 +83,10 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   }, [router]);
   const openDraft = (agent: AgentName, ref: string) => start(async () => {
     const r = await getDraft({ agent, ref });
+    if (r.ok) { setDraft(r.draft); draftDialog.current?.showModal(); } else setToast(r.message);
+  });
+  const openEscDraft = (rowNo: number) => start(async () => {
+    const r = await getEscalationDraft(rowNo);
     if (r.ok) { setDraft(r.draft); draftDialog.current?.showModal(); } else setToast(r.message);
   });
   const setStudio = (s: string) => {
@@ -118,6 +127,13 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const latePct = k.outstanding ? Math.round((k.late / k.outstanding) * 100) : 0;
   const top3 = d.studios.slice(0, 3);
   const tcvTotal = d.studios.reduce((s, x) => s + x.tcv, 0) || 1;
+  const simMult = Number(((simUtil / 78) * ((d.staffCount || 90) / Math.max(1, simStaff)) * (1 + (30 - simDays) * 0.008) * 2.65).toFixed(2));
+  const exportHref = (() => {
+    const qs = new URLSearchParams();
+    if (d.studio) qs.set("studio", d.studio);
+    if (d.client) qs.set("client", d.client);
+    return `/api/export${qs.size ? `?${qs}` : ""}`;
+  })();
 
   return (
     <div className="wrap">
@@ -130,7 +146,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           {tab !== "ask" && show("ask") && <a className="icon" href="#ask" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg></a>}
           <Bell notes={notifications} />
           {show("connect") && <a className="icon" href="#connect" aria-label="Connect AI" title="Connect AI" aria-current={tab === "connect" ? "page" : undefined}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0V8ZM12 18v4" /></svg></a>}
-          {show("brief") && <a className="icon xls" href={`/api/export${d.studio ? `?studio=${encodeURIComponent(d.studio)}` : ""}`} aria-label="Export tracker to Excel" title="Export tracker (.xlsx)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg></a>}
+          {show("brief") && <a className="icon xls" href={exportHref} aria-label="Export tracker to Excel" title="Export tracker (.xlsx)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg></a>}
           <form action={signOut}><button className="avatar signout" title={`${ROLE_LABEL[role]}${roleStudio ? ` · ${roleStudio}` : ""} · ${email} · Sign out`} aria-label="Sign out">{initials}</button></form>
         </div>
       </header>
@@ -269,12 +285,17 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= PLAN ================= */}
       {show("plan") && <main className="screen hero" hidden={tab !== "plan"}>
-        <PlanTab plan={plan} esc={esc} proj={proj} month={projMonth} role={role} studio={d.studio} openStages={d.openStages} run={run} pending={pending} setMonth={setMonth} />
+        <PlanTab plan={plan} esc={esc} proj={proj} month={projMonth} role={role} studio={d.studio} openStages={d.openStages} run={run} pending={pending} setMonth={setMonth} onEscDraft={openEscDraft} />
       </main>}
 
       {/* ================= FINANCE ================= */}
       {show("finance") && <main className="screen hero" hidden={tab !== "finance"}>
-        <FinanceTab queue={fq} open={d.open} role={role} run={run} pending={pending} zohoSample={d.zohoIsSample} onDraft={(id) => openDraft("invoice_trigger", String(id))} />
+        <FinanceTab queue={fq} open={d.open} payments={d.payments} role={role} run={run} pending={pending} zohoSample={d.zohoIsSample} onDraft={(id) => openDraft("invoice_trigger", String(id))} toast={setToast} />
+      </main>}
+
+      {/* ================= TRACKER ================= */}
+      {show("tracker") && <main className="screen hero" hidden={tab !== "tracker"}>
+        <TrackerTab studio={d.studio} client={d.client} active={tab === "tracker"} />
       </main>}
 
       {/* ================= AGENTS ================= */}
@@ -355,16 +376,23 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         <div className="eyebrow">Studio economics · {month}</div>
         <div className="e-head">
           <h1>Is each studio earning its keep? <em>What moves it?</em></h1>
-          <div className="seg" role="group" aria-label="Figures"><button aria-pressed="true">Recorded</button><button aria-pressed="false" onClick={() => setToast("Projected figures need payroll and timesheets.")}>Projected</button></div>
+          <div className="seg" role="group" aria-label="Figures">
+            <button aria-pressed={studioMode === "recorded"} onClick={() => setStudioMode("recorded")}>Recorded</button>
+            <button aria-pressed={studioMode === "projected"} onClick={() => setStudioMode("projected")}>Projected</button>
+          </div>
         </div>
         <div className="e-row1">
           <section className="mult">
             <div className="mhead"><span>FIRM MULTIPLIER</span><span>TARGET 3.0X</span></div>
-            <div className="x num">—</div>
-            <div className="sub">{d.staffCount} staff listed · payroll not connected</div>
-            <div className="mtrack"><i style={{ width: 0 }} /></div>
-            <div className="maxis"><span>0x</span><span>Break-even needs payroll</span><span>3.0x</span></div>
-            <div className={`mnote swap${ins.loading ? " loading" : ""}`} key={ins.source}>{ins.source === "llm" ? "AI reading: " : ""}{text.studios_note}</div>
+            <div className="x num">{studioMode === "projected" ? `${simMult.toFixed(2)}x` : "—"}</div>
+            <div className="sub">{studioMode === "projected" ? `${simStaff} staff · ${simUtil}% utilisation · ${simDays}-day billing (simulated)` : `${d.staffCount} staff listed · payroll not connected`}</div>
+            <div className="mtrack"><i style={{ width: studioMode === "projected" ? `${Math.min(100, Math.round((simMult / 3) * 100))}%` : 0 }} /></div>
+            <div className="maxis"><span>0x</span><span>{studioMode === "projected" ? "Break-even 1.8x (simulated)" : "Break-even needs payroll"}</span><span>3.0x</span></div>
+            <div className={`mnote swap${ins.loading ? " loading" : ""}`} key={`${ins.source}-${studioMode}`}>
+              {studioMode === "projected"
+                ? "Simulated model · payroll phase 2: adjust billing speed, utilisation or headcount to test studio economics."
+                : `${ins.source === "llm" ? "AI reading: " : ""}${text.studios_note}`}
+            </div>
           </section>
           <section className="card bubbles">
             <h2>Contract value by studio</h2>
@@ -373,34 +401,60 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           </section>
           <section className="card move">
             <h2>What would move it?</h2>
-            <div className="srow2"><span>Days from sign-off to invoice</span><span className="vchip2">—</span></div>
-            <div className="slider"><i /><b /></div>
-            <div className="srow2"><span>Billable utilisation</span><span className="vchip2">—</span></div>
-            <div className="slider"><i /><b /></div>
-            <div className="srow2"><span>Studio headcount</span><span className="vchip2">{d.staffCount}</span></div>
-            <div className="slider"><i /><b /></div>
-            <div className="proj"><span>Projected multiplier</span><b>—</b></div>
+            <div className="srow2"><label htmlFor="sim-days">Days from sign-off to invoice</label><span className="vchip2 num">{simDays} days</span></div>
+            <input id="sim-days" className="srange" type="range" min={5} max={45} value={simDays} onChange={(e) => { setSimDays(Number(e.target.value)); setStudioMode("projected"); }} />
+            <div className="srow2"><label htmlFor="sim-util">Billable utilisation</label><span className="vchip2 num">{simUtil}%</span></div>
+            <input id="sim-util" className="srange" type="range" min={50} max={95} value={simUtil} onChange={(e) => { setSimUtil(Number(e.target.value)); setStudioMode("projected"); }} />
+            <div className="srow2"><label htmlFor="sim-staff">Studio headcount</label><span className="vchip2 num">{simStaff}</span></div>
+            <input id="sim-staff" className="srange" type="range" min={Math.max(20, Math.round((d.staffCount || 90) * 0.6))} max={Math.round((d.staffCount || 90) * 1.4)} value={simStaff} onChange={(e) => { setSimStaff(Number(e.target.value)); setStudioMode("projected"); }} />
+            <div className="proj"><span>Projected multiplier</span><b className="num">{simMult.toFixed(2)}x</b></div>
           </section>
         </div>
         <div className="e-row2">
           <section className="card studios">
-            <div className="dhead"><h2>Studio multipliers</h2><span className="warn">Payroll and timesheets not yet connected</span></div>
+            <div className="dhead">
+              <h2>Studio multipliers</h2>
+              {studioMode === "projected"
+                ? <span className="tag t-amber">Simulated model · payroll phase 2</span>
+                : <span className="warn">Payroll and timesheets not yet connected</span>}
+            </div>
             <div className="thd"><span>STUDIO</span><span>LINES</span><span>TCV</span><span>{shortMonth(d.reportMonth)}<br />REVENUE</span><span>{shortMonth(d.reportMonth)}<br />PAYROLL</span><span>MULTIPLIER VS 3.0X</span></div>
-            {top3.map((s, i) => (
-              <div className="trow num" key={s.studio}><span className="st"><i className="dot" style={{ background: ["var(--pink)", "var(--blue-soft)", "var(--muted)"][i] }} />{s.studio}</span><span>{s.lines}</span><span>{inr(s.tcv)}</span><span>{s.revenue ? `+${inr(s.revenue)}` : "₹0"}</span><span>—</span><span className="mbar"><i style={{ ["--w" as string]: "0%", ["--c" as string]: "var(--muted)" }} />—</span></div>
-            ))}
-            <div className="effort"><h2>Effort vs fee burned</h2><small>Hours need project timesheets · fee from tracker</small></div>
-            {d.timeline.slice(0, 3).map((l, i) => (
-              <div className="erow" key={l.id}><span style={{ textAlign: "left", color: "var(--fg)", fontSize: 15 }}>{l.client_name ?? l.project_number}</span><i style={{ ["--w" as string]: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%`, ["--c" as string]: i ? "var(--blue-soft)" : "var(--pink)" }} /><span>Hours n/a · {Math.round((l.billed_pct ?? 0) * 100)}% fee</span></div>
-            ))}
+            {top3.map((s, i) => {
+              const baseMult = [2.95, 2.72, 2.45][i] ?? 2.5;
+              const m = Number((baseMult * (simMult / 2.65)).toFixed(2));
+              const estRev = s.revenue || Math.round(s.tcv / 36);
+              const simPay = Math.round(estRev / Math.max(0.5, m));
+              const barColor = m >= 2.8 ? "var(--pink)" : "var(--blue-soft)";
+              return (
+                <div className="trow num" key={s.studio}>
+                  <span className="st"><i className="dot" style={{ background: ["var(--pink)", "var(--blue-soft)", "var(--muted)"][i] }} />{s.studio}</span>
+                  <span>{s.lines}</span>
+                  <span>{inr(s.tcv)}</span>
+                  <span>{s.revenue ? `+${inr(s.revenue)}` : "₹0"}</span>
+                  <span>{studioMode === "projected" ? inr(simPay) : "—"}</span>
+                  <span className="mbar"><i style={{ ["--w" as string]: studioMode === "projected" ? `${Math.min(100, Math.round((m / 3) * 100))}%` : "0%", ["--c" as string]: studioMode === "projected" ? barColor : "var(--muted)" }} />{studioMode === "projected" ? `${m.toFixed(2)}x` : "—"}</span>
+                </div>
+              );
+            })}
+            <div className="effort"><h2>Effort vs fee burned</h2><small>{studioMode === "projected" ? "Estimated hours from simulated burn · fee from tracker" : "Hours need project timesheets · fee from tracker"}</small></div>
+            {d.timeline.slice(0, 3).map((l, i) => {
+              const estHrs = Math.max(120, Math.round(((l.billed_amount ?? 0) || (l.split_value ?? 0) * 0.25) / 3800));
+              return (
+                <div className="erow" key={l.id}>
+                  <span style={{ textAlign: "left", color: "var(--fg)", fontSize: 15 }}>{l.client_name ?? l.project_number}</span>
+                  <i style={{ ["--w" as string]: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%`, ["--c" as string]: i ? "var(--blue-soft)" : "var(--pink)" }} />
+                  <span>{studioMode === "projected" ? `~${estHrs.toLocaleString("en-IN")} hrs est.` : "Hours n/a"} · {Math.round((l.billed_pct ?? 0) * 100)}% fee</span>
+                </div>
+              );
+            })}
           </section>
           <Forecast months={d.months.slice(0, span)} committed={d.committed.slice(0, span)} span={span} setSpan={setSpan} />
         </div>
       </main>
 
-      {/* ================= MAIL (coming soon) ================= */}
+      {/* ================= MAIL ================= */}
       {show("mail") && <main className="screen hero" hidden={tab !== "mail"}>
-        <MailTab projects={d.timeline} />
+        <MailTab projects={d.timeline} clients={d.clients} open={d.open} notifications={notifications} onDraft={openDraft} toast={setToast} />
       </main>}
 
       <dialog ref={draftDialog} className="sheet" aria-labelledby="draft-title" onClose={() => setDraft(null)}>

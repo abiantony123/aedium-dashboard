@@ -55,9 +55,9 @@ try {
 
   // ---------- 1. personas: tabs per role ----------
   const expect: Record<string, string[]> = {
-    admin: ["brief", "cash", "plan", "finance", "agents", "ask", "studios", "mail"], ceo: ["brief", "cash", "plan", "finance", "agents", "ask", "studios", "mail"],
-    project_manager: ["brief", "cash", "plan", "agents", "ask", "studios", "mail"], finance: ["brief", "cash", "plan", "finance", "agents", "ask", "mail"],
-    hr: ["brief", "studios", "ask", "mail"], employee: ["studios", "mail"],
+    admin: ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "studios", "mail"], ceo: ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "studios", "mail"],
+    project_manager: ["brief", "cash", "plan", "tracker", "agents", "ask", "studios", "mail"], finance: ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "mail"],
+    hr: ["brief", "studios", "ask", "mail", "tracker"], employee: ["studios", "mail"],
   };
   for (const [role, tabs] of Object.entries(expect)) {
     const html = await (await fetch(`${BASE}/`, { headers: { cookie: await cookie(role, role === "project_manager" ? "MEPF" : "") } })).text();
@@ -148,6 +148,9 @@ try {
   const ex = await fetch(`${BASE}/api/export`, { headers: { cookie: await cookie("admin") } });
   const wb = new ExcelJS.Workbook(); await wb.xlsx.load(Buffer.from(await ex.arrayBuffer()) as any);
   ok("Excel export", ex.status === 200 && wb.worksheets.map((w) => w.name).join(",") === "Summary,Billing Stages,Purchase orders" && wb.getWorksheet("Summary")!.rowCount > 400, `${wb.getWorksheet("Summary")?.rowCount} summary rows`);
+  const tr = await fetch(`${BASE}/api/tracker?sheet=summary`, { headers: { cookie: await cookie("admin") } });
+  const trJson = await tr.json();
+  ok("tracker API (summary)", tr.status === 200 && Array.isArray(trJson?.rows) && trJson.rows.length > 400, `${trJson?.rows?.length ?? 0} rows`);
   const exEmp = await fetch(`${BASE}/api/export`, { headers: { cookie: await cookie("employee") } });
   ok("employee cannot export", exEmp.status === 403);
   const ins = await fetch(`${BASE}/api/insights`, { headers: { cookie: await cookie("admin") } });

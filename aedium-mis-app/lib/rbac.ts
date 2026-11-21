@@ -16,15 +16,15 @@ export const ROLE_NOTE: Record<Role, string> = {
   employee: "Studio view and mail (my work in phase 2).",
 };
 
-export const TABS = ["brief", "cash", "plan", "finance", "agents", "ask", "studios", "mail", "connect"] as const;
+export const TABS = ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "studios", "mail", "connect"] as const;
 export type TabName = (typeof TABS)[number];
 
 const TAB_ACCESS: Record<Role, TabName[]> = {
   admin: [...TABS],
   ceo: [...TABS],
-  project_manager: ["brief", "cash", "plan", "agents", "ask", "studios", "mail", "connect"],
-  finance: ["brief", "cash", "plan", "finance", "agents", "ask", "mail", "connect"],
-  hr: ["brief", "studios", "ask", "mail"],
+  project_manager: ["brief", "cash", "plan", "tracker", "agents", "ask", "studios", "mail", "connect"],
+  finance: ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "mail", "connect"],
+  hr: ["brief", "studios", "ask", "mail", "tracker"],
   employee: ["studios", "mail"],
 };
 
