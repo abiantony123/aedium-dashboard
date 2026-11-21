@@ -1,6 +1,6 @@
 import type { Db as SupabaseClient } from "./supabase/server";
 import { daysBetween } from "./format";
-import { instalmentMonths } from "./construction";
+import { instalmentMonths, instalmentsInWindow, monthsBetween } from "./construction";
 
 // ---------- row types (match supabase/migrations) ----------
 export type Line = {
@@ -44,7 +44,7 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
 }
 
 export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null) {
-  const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff] = await Promise.all([
+  const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
     all<OpenInvoice>(sb, "v_open_invoices", "invoice_id,invoice_number,customer_name,project_name,project_number,studio,date,due_date,total,balance,days_overdue,bucket", "invoice_id"),
@@ -55,11 +55,12 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
     sb.from("stage_events").select("project_number,studio,seq,event,created_at,actor_email").order("created_at", { ascending: false }).limit(50),
     sb.from("import_runs").select("id,source,finished_at,ok,counts,issues,report_month").order("id", { ascending: false }).limit(5),
     sb.from("staff").select("id", { count: "exact", head: true }),
+    sb.from("construction_plan").select("project_number,studio,start_month,months"),   // optional table: absent until its migration is run
   ]);
   const raw: Raw = {
     lines, stages, open, invoices, payments, sos,
     decisions: (decisions.data ?? []) as Decision[], events: (events.data ?? []) as Event[],
-    runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0,
+    runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0, cplan: (cplan.data ?? []) as NonNullable<Raw["cplan"]>,
   };
   const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort();
   const inStudio = studio ? filterStudio(raw, studio) : raw;
@@ -127,6 +128,7 @@ function filterStudio(r: Raw, studio: string): Raw {
 export type Raw = {
   lines: Line[]; stages: Stage[]; open: OpenInvoice[]; invoices: Invoice[]; payments: Payment[]; sos: SalesOrder[];
   decisions: Decision[]; events: Event[]; runs: ImportRun[]; staffCount: number;
+  cplan?: { project_number: string; studio: string; start_month: string; months: number | null }[];
 };
 
 export function build(r: Raw) {
@@ -190,6 +192,7 @@ export function build(r: Raw) {
   const months: string[] = [];
   { const [y, m] = today.slice(0, 7).split("-").map(Number); for (let i = 1; i <= 12; i++) { const d = new Date(Date.UTC(y, m - 1 + i, 1)); months.push(d.toISOString().slice(0, 7)); } }
   const committed = months.map(() => 0);
+  const cplan = new Map((r.cplan ?? []).map((c) => [lineKey(c.project_number, c.studio), c]));
   const activeKeys = new Set(active.map((l) => lineKey(l.project_number, l.studio)));
   const instalments = new Map<string, Stage[]>();
   for (const s of r.stages) if (!s.billed_on && /instal|monthly/i.test(s.stage ?? "") && activeKeys.has(lineKey(s.project_number, s.studio))) {
@@ -202,8 +205,11 @@ export function build(r: Raw) {
       if (slot >= 12) break;
       if ((s.pct ?? 0) > 0.05) {
         // One row holding the whole construction fee ("payable monthly over 36 months"): spread it.
-        const n = instalmentMonths(s.stage, lineByKey.get(lineKey(s.project_number, s.studio))?.contract_validity).months;
-        for (let i = slot; i < Math.min(12, slot + n); i++) committed[i] += (s.fee ?? 0) / n;
+        const ov = cplan.get(lineKey(s.project_number, s.studio));
+        const n = ov?.months ?? instalmentMonths(s.stage, lineByKey.get(lineKey(s.project_number, s.studio))?.contract_validity).months;
+        const off = ov ? monthsBetween(months[0], ov.start_month.slice(0, 7)) : slot;   // a confirmed start overrides "from next month"
+        const from = Math.max(0, off), count = instalmentsInWindow(off, n, 12);
+        for (let i = from; i < from + count; i++) committed[i] += (s.fee ?? 0) / n;
         slot = 12;
       } else committed[slot++] += s.fee ?? 0;
     }

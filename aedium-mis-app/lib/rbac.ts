@@ -33,13 +33,13 @@ export type Action =
   | "finance.invoice" | "finance.payment"
   | "agent.collections" | "agent.invoice_trigger" | "agent.contract_watch"
   | "po.stage" | "po.review"
-  | "plan.target" | "plan.projection"
+  | "plan.target" | "plan.projection" | "plan.construction"
   | "keys.manage" | "data.read";
 
 const ACTIONS: Record<Role, Action[]> = {
-  admin: ["stage.complete", "stage.approve", "stage.notify_finance", "finance.invoice", "finance.payment", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "keys.manage", "data.read"],
-  ceo: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "keys.manage", "data.read"],
-  project_manager: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "plan.projection", "keys.manage", "data.read"],
+  admin: ["stage.complete", "stage.approve", "stage.notify_finance", "finance.invoice", "finance.payment", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "keys.manage", "data.read"],
+  ceo: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "keys.manage", "data.read"],
+  project_manager: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "plan.projection", "plan.construction", "keys.manage", "data.read"],
   finance: ["finance.invoice", "finance.payment", "agent.collections", "plan.projection", "keys.manage", "data.read"],
   hr: ["data.read"],
   employee: [],

@@ -4,12 +4,32 @@ import { inr, monthLabel, niceDate } from "@/lib/format";
 import { can, type Role } from "@/lib/rbac";
 import type { fyPlan, escalations, projection } from "@/lib/plan";
 import type { Dash } from "@/lib/data";
-import { saveTarget, addForecast, removeForecast, autofillForecast } from "./actions";
+import { saveTarget, addForecast, removeForecast, autofillForecast, saveConstruction } from "./actions";
 
 type Plan = Awaited<ReturnType<typeof fyPlan>>;
 type Esc = Awaited<ReturnType<typeof escalations>>;
 type Proj = Awaited<ReturnType<typeof projection>>;
 type Run = (p: Promise<{ ok: boolean; message: string }>) => void;
+
+type ConsItem = Plan["construction"][number];
+function ConsRow({ c, editable, pending, run }: { c: ConsItem; editable: boolean; pending: boolean; run: Run }) {
+  const [start, setStart] = useState(c.start ?? "");
+  const [months, setMonths] = useState(c.months_set != null ? String(c.months_set) : "");
+  const basis = c.months_set != null ? "set here" : c.basis === "stage" ? "from the PO wording" : c.basis === "contract" ? "from contract validity" : "assumed";
+  return (
+    <div className="crow2">
+      <div className="pname"><b>{c.client ?? c.project ?? c.project_number}</b><span>{[c.studio, c.project_number.trim()].filter(Boolean).join(" · ")}</span></div>
+      <div className="num">{inr(c.fee)}<small>{c.months} months · {basis}</small></div>
+      {editable ? (
+        <div className="acts">
+          <input aria-label="Construction start month" className="field" type="month" value={start} onChange={(e) => setStart(e.target.value)} />
+          <input aria-label="Duration in months" className="field" type="number" min={1} max={120} placeholder={`${c.months} mo`} value={months} onChange={(e) => setMonths(e.target.value)} />
+          <button className="pill" disabled={pending || !start} onClick={() => run(saveConstruction({ project_number: c.project_number, studio: c.studio, start, months: months ? Number(months) : null }))}>Save</button>
+        </div>
+      ) : <div className="num">{c.start ? monthLabel(c.start) : "Not set"}</div>}
+    </div>
+  );
+}
 
 export default function PlanTab({ plan, esc, proj, month, role, studio, openStages, run, pending, setMonth }:
   { plan: Plan | null; esc: Esc; proj: Proj | null; month: string; role: Role; studio: string | null; openStages: Dash["openStages"]; run: Run; pending: boolean; setMonth: (m: string) => void }) {
@@ -39,7 +59,7 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         <section className="card p-target">
           <h2>FY target</h2>
           <p className="note">{plan.method}</p>
-          <p className="note">Construction timing: {plan.timing.stage} from the stage wording, {plan.timing.contract} from the contract validity{plan.timing.assumed ? `, ${plan.timing.assumed} assumed at 36 months (no duration recorded)` : ""}.</p>
+          <p className="note">Construction timing: {plan.timing.stage} from the stage wording, {plan.timing.contract} from the contract validity{plan.timing.assumed ? `, ${plan.timing.assumed} assumed at 36 months (no duration recorded)` : ""}. {plan.confirmed} with a confirmed start month.</p>
           {can(role, "plan.target") ? (
             <form className="p-form" onSubmit={(e) => { e.preventDefault(); const v = Number(target); if (v > 0) run(saveTarget({ fy: plan.fy, studio: studio ?? "All", target: v * 1e5 })); }}>
               <label htmlFor="p-target">Target for {studio ?? "the firm"} (₹ lakh)</label>
@@ -61,6 +81,15 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="card p-cons">
+        <div className="dhead"><h2>Construction start</h2><span className="note">Instalments count from the confirmed month. Without one, from next month.</span></div>
+        {!plan.construction_ready && <p className="note">To save start months, run <code>supabase/migrations/20261121000000_construction_plan.sql</code> in the Supabase SQL Editor.</p>}
+        {plan.construction.length === 0 && <p className="note">No construction instalments are waiting on active lines.</p>}
+        {plan.construction.map((c) => (
+          <ConsRow key={`${c.project_number}|${c.studio}`} c={c} editable={plan.construction_ready && can(role, "plan.construction")} pending={pending} run={run} />
+        ))}
       </section>
 
       <section className="card p-proj">

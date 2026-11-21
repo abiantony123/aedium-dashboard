@@ -6,7 +6,7 @@ import { recordStageEvent, recordDecision, draftEmail, type Actor, type AgentNam
 import { createKey, revokeKey } from "@/lib/agents/keys";
 import { assertCan } from "@/lib/rbac";
 import { reviewPo, getPo, excelRows } from "@/lib/po";
-import { setTarget, addProjection, deleteProjection, autofillProjection } from "@/lib/plan";
+import { setTarget, addProjection, deleteProjection, autofillProjection, setConstruction } from "@/lib/plan";
 import { raiseInvoice as raiseInv, recordPayment as recordPay, markNotificationsRead } from "@/lib/finance";
 
 type Result = { ok: true; message: string } | { ok: false; message: string };
@@ -61,6 +61,9 @@ export async function poExcelRows(id: number) {
 // ---- plan ----
 export async function saveTarget(input: { fy: string; studio: string; target: number }): Promise<Result> {
   try { const { sb, actor } = await me(); await setTarget(sb, actor, input.fy, input.studio, input.target); return done("Target saved"); } catch (e) { return fail(e); }
+}
+export async function saveConstruction(input: { project_number: string; studio: string | null; start: string; months: number | null }): Promise<Result> {
+  try { const { sb, actor } = await me(); await setConstruction(sb, actor, input); return done("Construction start saved"); } catch (e) { return fail(e); }
 }
 export async function addForecast(input: { month: string; week: number; amount: number; description: string; project_number?: string | null; studio?: string | null; stage_seq?: number | null }): Promise<Result> {
   try { const { sb, actor } = await me(); await addProjection(sb, actor, input); return done("Forecast added"); } catch (e) { return fail(e); }

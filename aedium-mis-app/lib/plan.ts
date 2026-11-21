@@ -3,7 +3,7 @@ import type { Db } from "./supabase/server";
 import { all, isActive, type Line, type Stage } from "./data";
 import { assertCan } from "./rbac";
 import { who, type Actor } from "./agents/actions";
-import { instalmentMonths, type Basis } from "./construction";
+import { instalmentMonths, instalmentsInWindow, monthsBetween, type Basis } from "./construction";
 
 const IST = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
 export function fyOf(d: string) { const y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7)); const s = m >= 4 ? y : y - 1; return { label: `${s}-${String((s + 1) % 100).padStart(2, "0")}`, start: `${s}-04-01`, end: `${s + 1}-03-31` }; }
@@ -43,13 +43,26 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
     else row(s.studio).design_pending += s.fee ?? 0;
   }
   const validity = new Map(lines.map((l) => [key(l.project_number, l.studio), l.contract_validity]));
+  const lineOf = new Map(lines.map((l) => [key(l.project_number, l.studio), l]));
   const timing: Record<Basis, number> = { stage: 0, contract: 0, assumed: 0 };
+  const { ready: construction_ready, map: cplan } = await constructionPlan(sb);
+  const construction: { project_number: string; studio: string | null; client: string | null; project: string | null; fee: number; months: number; basis: Basis; start: string | null; months_set: number | null }[] = [];
+  let confirmed = 0;
   for (const [k, xs] of inst.entries()) {
     xs.sort((a, b) => a.seq - b.seq);
     let slot = 0;
     for (const s of xs) {
       if (slot >= months.length) break;
-      if ((s.pct ?? 0) > 0.05) { const { months: n, basis } = instalmentMonths(s.stage, validity.get(k)); timing[basis]++; row(s.studio).construction_in_fy += ((s.fee ?? 0) / n) * Math.min(months.length - slot, n); slot = months.length; }
+      if ((s.pct ?? 0) > 0.05) {
+        const auto = instalmentMonths(s.stage, validity.get(k)), ov = cplan.get(k);
+        const n = ov?.months ?? auto.months;
+        timing[auto.basis]++; if (ov) confirmed++;
+        const off = ov ? monthsBetween(months[0], ov.start_month.slice(0, 7)) : slot;   // a confirmed start replaces "from next month"
+        row(s.studio).construction_in_fy += ((s.fee ?? 0) / n) * instalmentsInWindow(off, n, months.length);
+        const l = lineOf.get(k);
+        construction.push({ project_number: s.project_number, studio: s.studio, client: l?.client_name ?? null, project: l?.project_name ?? null, fee: s.fee ?? 0, months: n, basis: auto.basis, start: ov ? ov.start_month.slice(0, 7) : null, months_set: ov?.months ?? null });
+        slot = months.length;
+      }
       else { row(s.studio).construction_in_fy += s.fee ?? 0; slot++; }
     }
   }
@@ -63,9 +76,23 @@ export async function fyPlan(sb: Db, studio: string | null, client: string | nul
   return {
     fy: fy.label, today, months_left: months.length, studio: studio ?? "All",
     total: { billed_ytd: sum((r) => r.billed_ytd), design_pending: sum((r) => r.design_pending), construction_in_fy: sum((r) => r.construction_in_fy), outlook: sum((r) => r.outlook), target, gap: target != null ? target - sum((r) => r.outlook) : null },
-    rows, timing,
+    rows, timing, confirmed, construction_ready, construction: construction.sort((a, b) => b.fee - a.fee).slice(0, 15),
     method: "Billed YTD = stages billed since 1 April. Design pending = unbilled milestone stages on active lines (billable this FY if delivered). Construction = unbilled monthly instalments that fall before 31 March, one per month.",
   };
+}
+
+// Confirmed construction start per line. The table is optional: until its migration is run this reads as "none set".
+async function constructionPlan(sb: Db) {
+  const { data, error } = await sb.from("construction_plan").select("project_number,studio,start_month,months");
+  return { ready: !error, map: new Map((data ?? []).map((c) => [`${c.project_number}|${c.studio ?? ""}`, c as { project_number: string; studio: string; start_month: string; months: number | null }])) };
+}
+export async function setConstruction(sb: Db, actor: Actor, r: { project_number: string; studio: string | null; start: string; months: number | null }) {
+  assertCan(actor.role, "plan.construction");
+  if (actor.role === "project_manager" && actor.studio && r.studio !== actor.studio) throw new Error(`You can only plan ${actor.studio} lines.`);
+  if (!/^\d{4}-\d{2}$/.test(r.start)) throw new Error("Choose a start month.");
+  if (r.months != null && !(Number.isInteger(r.months) && r.months >= 1 && r.months <= 120)) throw new Error("Duration must be 1 to 120 months.");
+  const { error } = await sb.from("construction_plan").upsert({ project_number: r.project_number, studio: r.studio ?? "", start_month: `${r.start}-01`, months: r.months, updated_by: who(actor), updated_at: new Date().toISOString() });
+  if (error) throw new Error(/construction_plan/.test(error.message) ? "Run supabase/migrations/20261121000000_construction_plan.sql in Supabase first." : error.message);
 }
 
 // Escalation: rate parsed from the clause text; applied per started year past the contract end date on the unbilled amount.

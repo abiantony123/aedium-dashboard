@@ -584,3 +584,11 @@ dialog.sheet{max-height:calc(100vh - 48px);overflow:auto}
 .cproj .pval{display:flex;flex-direction:column;align-items:flex-end}
 .cproj .pstud{display:flex;flex-wrap:wrap;gap:6px}
 @media (max-width:760px){ .ctree{padding:20px 16px} .cnode summary{grid-template-columns:1fr auto} .cproj .prow{grid-template-columns:1fr auto} .cproj .pstud{grid-column:1/-1} }
+/* ---------- construction start (Plan) ---------- */
+.p-cons .crow2{display:grid;grid-template-columns:minmax(160px,1.4fr) 1fr minmax(280px,1.6fr);gap:14px;align-items:center;border-top:1px solid #2A2A30;padding:12px 0}
+.p-cons .pname{display:flex;flex-direction:column;gap:3px}
+.p-cons .pname span,.p-cons .crow2 small{color:var(--muted);font-size:13px;display:block}
+.p-cons .acts{display:flex;gap:8px;flex-wrap:wrap}
+.p-cons .field{height:38px;min-width:0;flex:1 1 120px}
+.p-cons .pill{height:38px;font-size:14.5px}
+@media (max-width:760px){ .p-cons .crow2{grid-template-columns:1fr} }
