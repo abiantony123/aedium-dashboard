@@ -58,6 +58,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const [tab, setTab] = useState<Tab>("brief");
   const [nameFilter, setNameFilter] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [timelineMode, setTimelineMode] = useState<"milestones" | "calendar">("milestones");
   const searchWrapRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [span, setSpan] = useState<6 | 12>(6);
@@ -261,9 +262,34 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     const onDocDown = (e: MouseEvent) => {
       if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) setSearchOpen(false);
     };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== "color-scheme") return;
+      const m = document.querySelector('meta[name="color-scheme"]');
+      if (m) m.setAttribute("content", e.newValue === "light" || e.newValue === "dark" ? e.newValue : "light dark");
+    };
     document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
+  const toggleTheme = () => {
+    const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const sys: "light" | "dark" = sysDark ? "dark" : "light";
+    let stored: string | null = null;
+    try { stored = localStorage.getItem("color-scheme"); } catch { /* ignore */ }
+    const current: "light" | "dark" = stored === "light" || stored === "dark" ? stored : sys;
+    const target: "light" | "dark" = current === "dark" ? "light" : "dark";
+    const meta = document.querySelector('meta[name="color-scheme"]');
+    if (target === sys) {
+      try { localStorage.removeItem("color-scheme"); } catch { /* ignore */ }
+      if (meta) meta.setAttribute("content", "light dark");
+    } else {
+      try { localStorage.setItem("color-scheme", target); } catch { /* ignore */ }
+      if (meta) meta.setAttribute("content", target);
+    }
+  };
 
   const run = (p: Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await p; setToast(r.message); });
   const initials = email.startsWith("demo-") ? ({ admin: "PM", ceo: "CE", project_manager: "PD", finance: "FN", hr: "HR", employee: "EM" } as Record<Role, string>)[role]
@@ -371,26 +397,18 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   }, [matchedClients, q, role, roleStudio]);
 
   const cashView = useMemo(() => {
-    if (!q) {
-      return {
-        kpi: d.kpi,
-        pipeline: d.pipeline,
-        open: d.open,
-        lastPay: d.lastPay,
-        timeline: d.timeline.map((l) => ({
-          key: String(l.id), title: l.client_name ?? l.project_number,
-          sub: `${l.studio ?? "—"} · ${l.project_stage ?? l.status ?? "No stage recorded"}`,
-          val: l.split_value ?? 0, pct: l.billed_pct ?? 0,
-        })),
-      };
-    }
+    const tlCandidates: {
+      key: string; client: string; project_number: string; project_name: string | null; studio: string | null;
+      start_date: string | null; end_date: string | null; validity: string | null; stageLabel: string;
+      val: number; billed: number; yetToBill: number; pct: number; stages: ClientStageNode[];
+    }[] = [];
     const pns = new Set<string>();
     const lineKeys = new Set<string>();
     const stageIds = new Set<number>();
     const projNames = new Set<string>();
     const clientNames = new Set<string>();
     let contract = 0, billedTotal = 0, yetToBill = 0;
-    const tlCandidates: { key: string; title: string; sub: string; val: number; pct: number }[] = [];
+
     for (const c of matchedClients) {
       clientNames.add(c.client.toLowerCase());
       for (const p of c.projects) {
@@ -399,34 +417,40 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         p.studios.forEach((s, si) => {
           lineKeys.add(`${p.project_number}|${s.studio ?? ""}`);
           for (const st of s.stages) stageIds.add(st.id);
-          if (s._partial) {
+          if (q && s._partial) {
+            let partVal = 0, partBilled = 0, partYet = 0;
             for (const st of s.stages) {
               const fee = Number(st.fee) || 0;
               const billed = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
-              contract += fee;
-              if (billed) billedTotal += fee; else yetToBill += fee;
+              partVal += fee;
+              if (billed) partBilled += fee; else partYet += fee;
             }
-            const partVal = s.stages.reduce((a, st) => a + (Number(st.fee) || 0), 0);
-            const partBilled = s.stages.filter((st) => st.billed_on || st.workflow_status === "billed" || st.workflow_status === "invoiced").reduce((a, st) => a + (Number(st.fee) || 0), 0);
+            contract += partVal; billedTotal += partBilled; yetToBill += partYet;
             tlCandidates.push({
               key: `${p.project_number}-${s.studio ?? ""}-${si}`,
-              title: `${c.client} · ${shorten(p.name ?? p.project_number, 26)}`,
-              sub: `${s.studio ?? "—"} · ${s.stages.map((st) => st.stage).filter(Boolean).join(", ") || "Milestone"}`,
-              val: partVal, pct: partVal ? partBilled / partVal : 0,
+              client: c.client, project_number: p.project_number, project_name: p.name, studio: s.studio,
+              start_date: p.start_date, end_date: p.end_date, validity: p.validity,
+              stageLabel: s.stages.map((st) => st.stage).filter(Boolean).join(", ") || "Milestone",
+              val: partVal, billed: partBilled, yetToBill: partYet, pct: partVal ? partBilled / partVal : 0, stages: s.stages,
             });
           } else {
-            contract += s.value;
-            billedTotal += s.billed;
-            yetToBill += s.yetToBill;
+            contract += s.value; billedTotal += s.billed; yetToBill += s.yetToBill;
             tlCandidates.push({
               key: `${p.project_number}-${s.studio ?? ""}-${si}`,
-              title: `${c.client} · ${shorten(p.name ?? p.project_number, 26)}`,
-              sub: `${s.studio ?? "—"} · ${s.stage ?? s.status ?? "No stage recorded"}`,
-              val: s.value, pct: s.billedPct ?? 0,
+              client: c.client, project_number: p.project_number, project_name: p.name, studio: s.studio,
+              start_date: p.start_date, end_date: p.end_date, validity: p.validity,
+              stageLabel: s.stage ?? s.status ?? "No stage recorded",
+              val: s.value, billed: s.billed, yetToBill: s.yetToBill, pct: s.billedPct ?? (s.value ? s.billed / s.value : 0), stages: s.stages,
             });
           }
         });
       }
+    }
+    const sortedTl = tlCandidates.sort((a, b) => b.val - a.val);
+    const timeline = d.project ? sortedTl : sortedTl.slice(0, 6);
+
+    if (!q) {
+      return { kpi: d.kpi, pipeline: d.pipeline, open: d.open, lastPay: d.lastPay, timeline };
     }
     const open = d.open.filter((i) => {
       if (d.stage != null) return true;
@@ -448,12 +472,11 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       const items = p.items.filter((item) => stageIds.has(item.id));
       return { ...p, count: items.length, value: items.reduce((a, x) => a + (Number(x.fee) || 0), 0), top: items[0] ?? null, items };
     });
-    const timeline = tlCandidates.sort((a, b) => b.val - a.val).slice(0, 6);
     return {
       kpi: { ...d.kpi, contract, billedTotal, yetToBill, outstanding, late, collectedMonth, openCount: open.length },
       pipeline, open, lastPay, timeline,
     };
-  }, [q, matchedClients, d.kpi, d.pipeline, d.open, d.lastPay, d.timeline, d.payments, d.reportMonth, d.stage]);
+  }, [q, matchedClients, d.kpi, d.pipeline, d.open, d.lastPay, d.payments, d.reportMonth, d.stage, d.project]);
 
   const k = d.kpi;
   const ck = cashView.kpi;
@@ -479,6 +502,20 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         <div className="tools">
           {tab !== "ask" && show("ask") && <a className="icon" href="#ask" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg></a>}
           <Bell notes={notifications} />
+          <button type="button" className="icon theme-btn" onClick={toggleTheme} title="Switch light / dark theme">
+            <span className="only-dark">
+              <span className="sr">Switch to light theme</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+              </svg>
+            </span>
+            <span className="only-light">
+              <span className="sr">Switch to dark theme</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+              </svg>
+            </span>
+          </button>
           {show("connect") && <a className="icon" href="#connect" aria-label="Connect AI" title="Connect AI" aria-current={tab === "connect" ? "page" : undefined}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0V8ZM12 18v4" /></svg></a>}
           {show("brief") && <a className="icon xls" href={exportHref} aria-label="Export tracker to Excel" title="Export tracker (.xlsx)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg></a>}
           <form action={signOut}><button className="avatar signout" title={`${ROLE_LABEL[role]}${roleStudio ? ` · ${roleStudio}` : ""} · ${email} · Sign out`} aria-label="Sign out">{initials}</button></form>
@@ -508,7 +545,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           </section>
           <section className="card late">
             <h2>Late receivables</h2>
-            <div className="ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="#2A2A30" strokeWidth="10" /><circle cx="50" cy="50" r="42" fill="none" stroke="#D6336C" strokeWidth="10" strokeLinecap="round" pathLength={100} strokeDasharray={`${latePct} 100`} /></svg><b>{latePct}%</b></div>
+            <div className="ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="42" fill="none" stroke="var(--raised)" strokeWidth="10" /><circle cx="50" cy="50" r="42" fill="none" stroke="#D6336C" strokeWidth="10" strokeLinecap="round" pathLength={100} strokeDasharray={`${latePct} 100`} /></svg><b>{latePct}%</b></div>
             <div className="amt num">{inr(k.late)} <small>late of {inr(k.outstanding)}</small></div>
             <div className="src">{plural(k.openCount, "open invoice")} · Zoho Books{d.zohoIsSample ? " (sample)" : ""}</div>
           </section>
@@ -657,15 +694,128 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         </div>
         <div className="b-bottom">
           <section className="card timeline">
-            <div className="ahead"><h2>Project cash timeline</h2><div className="legend"><span><i style={{ border: "1.5px solid var(--muted)" }} />Contract</span><span><i style={{ background: "var(--blue-soft)" }} />Billed</span><span>Largest active lines · master tracker</span></div></div>
-            <div className="tl">
-              <div /><div className="cols"><span>CONCEPT</span><span>DESIGN</span><span>SANCTION</span><span>GFC</span><span>BUILD</span></div>
-              {cashView.timeline.length === 0 ? <p className="note" style={{ gridColumn: "1/-1" }}>No active lines match this filter.</p> : cashView.timeline.map((l) => (
-                <Fragment2 key={l.key}>
-                  <div className="pname"><b>{l.title}</b><span>{l.sub}</span></div>
-                  <div className="bar" title={`${inr(l.val)} contract · ${Math.round(l.pct * 100)}% billed`}><i className="b1" style={{ width: `${Math.min(100, l.pct * 100)}%` }} /></div>
-                </Fragment2>
-              ))}
+            <div className="tl-head">
+              <div>
+                <h2>Project cash timeline</h2>
+                <div className="legend" style={{ marginTop: 6 }}>
+                  <span><i style={{ background: "var(--green)" }} />Billed</span>
+                  <span><i style={{ background: "var(--amber)" }} />Stage / Approved</span>
+                  <span><i style={{ background: "var(--blue-soft)" }} />With Finance</span>
+                  <span>Click any milestone to focus</span>
+                </div>
+              </div>
+              <div className="seg sm" role="group" aria-label="Timeline view">
+                <button aria-pressed={timelineMode === "milestones"} onClick={() => setTimelineMode("milestones")}>Milestone track</button>
+                <button aria-pressed={timelineMode === "calendar"} onClick={() => setTimelineMode("calendar")}>Calendar span</button>
+              </div>
+            </div>
+            <div className="tl-list">
+              {cashView.timeline.length === 0 ? (
+                <p className="note">No active lines match this filter.</p>
+              ) : cashView.timeline.map((l) => {
+                const startDate = l.start_date ?? l.stages.map((st) => st.billed_on).filter(Boolean).sort()[0] ?? `${d.reportMonth}-01`;
+                const fallbackEnd = new Date(Date.parse(startDate) + 365 * 86400000).toISOString().slice(0, 10);
+                const endDate = l.end_date ?? fallbackEnd;
+                const startMs = Date.parse(startDate);
+                const endMs = Math.max(Date.parse(endDate), startMs + 86400000);
+                const todayMs = Date.parse(d.today);
+                const spanMs = endMs - startMs;
+                const todayPct = Math.max(0, Math.min(100, Math.round(((todayMs - startMs) / spanMs) * 100)));
+                const isPastEnd = Boolean(l.end_date) && todayMs > endMs;
+                const datedStages = l.stages.filter((st) => st.billed_on);
+
+                return (
+                  <div className="tl-item" key={l.key}>
+                    <div className="tl-top">
+                      <div className="tl-meta">
+                        <b>{l.client} · {shorten(l.project_name ?? l.project_number, 38)}</b>
+                        <span>{l.studio ?? "—"} · {l.project_number} · {l.start_date && l.end_date ? `${niceDate(l.start_date)} → ${niceDate(l.end_date)}` : l.validity ?? l.stageLabel}</span>
+                      </div>
+                      <div className="tl-nums num">
+                        <b>{Math.round(l.pct * 100)}% billed · {inr(l.billed)} / {inr(l.val)}</b>
+                        <small>{inr(l.yetToBill)} yet to bill · {plural(l.stages.length, "milestone")}</small>
+                      </div>
+                    </div>
+
+                    {timelineMode === "milestones" ? (
+                      <>
+                        <div className="tl-prog" title={`${inr(l.val)} contract · ${Math.round(l.pct * 100)}% billed`}>
+                          <i style={{ width: `${Math.min(100, Math.round(l.pct * 100))}%` }} />
+                        </div>
+                        {l.stages.length === 0 ? (
+                          <span className="note">Current stage: {l.stageLabel} (no milestone rows recorded)</span>
+                        ) : (
+                          <div className="tl-nodes" role="list" aria-label={`Milestones for ${l.project_number} ${l.studio ?? ""}`}>
+                            {l.stages.map((st) => {
+                              const isBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+                              const isFin = st.workflow_status === "finance_notified";
+                              const isPipe = st.workflow_status === "complete" || st.workflow_status === "client_approved";
+                              const cls = isBilled ? "is-billed" : isFin ? "is-fin" : isPipe ? "is-pipe" : "is-pend";
+                              const badge = isBilled
+                                ? `✓ ${st.billed_on ? niceDate(st.billed_on) : "Billed"}`
+                                : isFin
+                                  ? "● In Finance"
+                                  : st.workflow_status === "client_approved"
+                                    ? "● Approved"
+                                    : st.workflow_status === "complete"
+                                      ? "● Complete"
+                                      : "○ Pending";
+                              const active = d.stage === st.id;
+                              return (
+                                <button
+                                  key={st.id}
+                                  type="button"
+                                  className={`tl-node ${cls}${active ? " active" : ""}`}
+                                  title={`#${st.seq} ${st.stage ?? ""} · ${inr(st.fee)} · ${badge}`}
+                                  onClick={() => active ? setStage(null) : setStage(st.id, { client: l.client, project: l.project_number, studio: l.studio })}
+                                >
+                                  <div className="tl-nhead">
+                                    <span>#{st.seq} · {STAGE_CAT_LABEL[st.category].label}</span>
+                                    <span>{st.pct != null ? `${(st.pct * 100).toFixed(st.pct * 100 % 1 ? 1 : 0)}%` : ""}</span>
+                                  </div>
+                                  <div className="tl-ntitle">{shorten(st.stage, 44)}</div>
+                                  <div className="tl-nfoot">
+                                    <span className="num">{st.fee != null ? inr(st.fee) : "—"}</span>
+                                    <span>{badge}</span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="tl-cal">
+                        <div className="tl-cal-head">
+                          <span>Start {niceDate(startDate)}{!l.start_date ? " (est.)" : ""}</span>
+                          <span>{isPastEnd ? `Contract ended ${niceDate(endDate)} (${todayPct}% elapsed)` : `${todayPct}% time elapsed · ${Math.round(l.pct * 100)}% billed`}</span>
+                          <span>End {niceDate(endDate)}{!l.end_date ? " (est.)" : ""}</span>
+                        </div>
+                        <div className="tl-cal-track">
+                          <div className="tl-cal-fill" style={{ width: `${Math.min(100, Math.round(l.pct * 100))}%` }} title={`${Math.round(l.pct * 100)}% fee billed`} />
+                          <div className="tl-today" style={{ left: `${todayPct}%` }} title={`Today (${niceDate(d.today)})`}>
+                            <span>Today</span>
+                          </div>
+                          {datedStages.map((st) => {
+                            const x = Math.max(2, Math.min(98, Math.round(((Date.parse(st.billed_on!) - startMs) / spanMs) * 100)));
+                            const active = d.stage === st.id;
+                            return (
+                              <button
+                                key={st.id}
+                                type="button"
+                                className={`tl-pin${active ? " active" : ""}`}
+                                style={{ left: `${x}%` }}
+                                title={`#${st.seq} ${st.stage ?? ""} · ${inr(st.fee)} · Billed ${niceDate(st.billed_on)}`}
+                                onClick={() => active ? setStage(null) : setStage(st.id, { client: l.client, project: l.project_number, studio: l.studio })}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
           <div className="b-right">
@@ -1026,7 +1176,6 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   );
 }
 
-function Fragment2({ children }: { children: React.ReactNode }) { return <>{children}</>; }
 function shorten(s: string | null | undefined, n = 32) { if (!s) return "stage"; const t = s.replace(/^upon\s+/i, ""); return t.length > n ? t.slice(0, n - 1) + "…" : t; }
 function ago(at: string | null | undefined, today: string, waiting = false) {
   if (!at) return "";
@@ -1126,6 +1275,15 @@ function ClientTree({
                                 {s.splitPct != null ? `${Math.round(s.splitPct * 100)}% share` : "100%"} · {plural(s.stages.length, "milestone")} ({billedStages} billed)
                                 {s.spoc ? ` · SPOC: ${s.spoc}` : ""}
                               </span>
+                              {s.stages.length > 0 && (
+                                <div className="mini-tl" aria-label="Milestone progress strip">
+                                  {s.stages.slice(0, 60).map((st) => {
+                                    const stBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+                                    const tone = stBilled ? "t-green" : st.workflow_status === "finance_notified" ? "t-blue" : (st.workflow_status === "complete" || st.workflow_status === "client_approved") ? "t-amber" : "t-grey";
+                                    return <i key={st.id} className={tone} title={`#${st.seq} ${st.stage ?? ""} · ${inr(st.fee)} (${stBilled ? `Billed ${niceDate(st.billed_on)}` : st.workflow_status})`} />;
+                                  })}
+                                </div>
+                              )}
                             </div>
                             <div className="smeta">
                               <span className="tag t-blue">Design {inr(s.designValue)}</span>
@@ -1254,7 +1412,7 @@ function Bubbles({ items }: { items: { name: string; share: number }[] }) {
   // Areas follow the shares; layout follows the design: big circle left, second top-right, third below it.
   const R = 100, size = (s: number) => Math.max(56, Math.round(2 * R * Math.sqrt(s / Math.max(items[0]?.share ?? 1, 0.0001))));
   const pos = [{ left: 0, top: 27 }, { left: 173, top: -7 }, { left: 208, top: 131 }];
-  const look = [{ background: "var(--pink)" }, { background: "var(--blue)", border: "3px solid var(--surface)" }, { border: "1.5px solid #4A4A52", background: "repeating-linear-gradient(135deg,var(--raised) 0 5px,var(--surface) 5px 10px)" }];
+  const look = [{ background: "var(--pink)", color: "#fff" }, { background: "var(--blue)", color: "#fff", border: "3px solid var(--surface)" }, { border: "1.5px solid var(--border)", background: "repeating-linear-gradient(135deg,var(--raised) 0 5px,var(--surface) 5px 10px)" }];
   return (
     <div className="bwrap">
       {items.map((it, i) => {
@@ -1276,9 +1434,9 @@ function Forecast({ months, committed, span, setSpan }: { months: string[]; comm
     <section className="card forecast">
       <div className="fhead"><h2>Billing forecast</h2><div className="seg sm" role="group" aria-label="Range"><button aria-pressed={span === 12} onClick={() => setSpan(12)}>12 months</button><button aria-pressed={span === 6} onClick={() => setSpan(6)}>6 months</button></div></div>
       <svg viewBox="0 0 468 120" role="img" aria-label={`Committed billing for the next ${span} months`}>
-        <line x1="0" y1="10" x2="468" y2="10" stroke="#2A2A30" /><line x1="0" y1="52" x2="468" y2="52" stroke="#2A2A30" /><line x1="0" y1="94" x2="468" y2="94" stroke="#2A2A30" />
-        <path key={span} className="draw" d={path} fill="none" stroke="#8FA8FF" strokeWidth="2.4" strokeLinejoin="round" pathLength={1} />
-        {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="4" fill="#8FA8FF"><title>{inr(committed[i])}</title></circle>)}
+        <line x1="0" y1="10" x2="468" y2="10" stroke="var(--line)" /><line x1="0" y1="52" x2="468" y2="52" stroke="var(--line)" /><line x1="0" y1="94" x2="468" y2="94" stroke="var(--line)" />
+        <path key={span} className="draw" d={path} fill="none" stroke="var(--blue-soft)" strokeWidth="2.4" strokeLinejoin="round" pathLength={1} />
+        {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="4" fill="var(--blue-soft)"><title>{inr(committed[i])}</title></circle>)}
       </svg>
       <div className="months">{months.map((m) => <span key={m}>{["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(m.slice(5)) - 1]}</span>)}</div>
       <div className="legend"><span><i style={{ background: "var(--blue-soft)" }} />Committed, stage dated · {inr(committed.reduce((a, b) => a + b, 0))}</span><span><i style={{ background: "var(--pink-text)" }} />Probable, AI estimate · not built</span></div>
