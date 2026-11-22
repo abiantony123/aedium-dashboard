@@ -86,11 +86,24 @@ h2{font-size:21px;font-weight:400;margin:0;letter-spacing:-.005em}
 .crow:first-of-type{margin-top:12px}
 
 /* ---------- B · Cash ---------- */
-.b-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
-.b-head .acts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;padding-bottom:4px;flex:1 1 560px}
+.b-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;position:relative;z-index:20}
+.b-head .acts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;padding-bottom:4px;flex:1 1 560px;overflow:visible}
 .b-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;margin-top:22px}
 .name-filter{min-width:220px;max-width:270px;font:inherit;font-size:14.5px;color:var(--fg);background:var(--surface);outline:none}
 .name-filter::placeholder{color:var(--muted)}
+.search-wrap{position:relative;flex:0 1 auto}
+.search-pop{position:absolute;top:calc(100% + 8px);left:0;width:min(480px,calc(100vw - 40px));max-height:420px;overflow:auto;background:var(--surface);border:1px solid #3A3A42;border-radius:18px;padding:8px;box-shadow:0 20px 50px rgba(0,0,0,.65);z-index:40;display:grid;gap:4px}
+.search-item{width:100%;display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;text-align:left;background:transparent;border:0;color:var(--fg);padding:9px 10px;border-radius:12px;font:inherit}
+.search-item:hover,.search-item:focus-visible{background:var(--raised);outline:none}
+.search-item .tag{height:24px;font-size:12px;padding:0 9px}
+.search-txt{min-width:0;display:grid;gap:2px}
+.search-txt b{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.search-txt small{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.search-val{font-size:13.5px;color:var(--muted);white-space:nowrap}
+.search-empty{padding:12px;font-size:13.5px;color:var(--muted)}
+.search-foot{width:100%;text-align:left;background:var(--raised);border:0;border-top:1px solid #2A2A30;color:var(--blue-soft);font:inherit;font-size:13px;padding:9px 12px;border-radius:10px;margin-top:4px}
+.search-foot:hover{background:#2E2E36}
+@media (max-width:760px){ .search-wrap{flex:1 1 100%} .search-wrap .name-filter{max-width:none;width:100%} }
 .b-kpis label{display:block;font-size:15.5px;color:var(--muted);padding-left:8px;margin-bottom:9px}
 .kpill{height:52px;border-radius:999px;display:flex;align-items:center;padding:0 22px;font-size:20px;background:var(--surface);border:1px solid var(--raised)}
 .kpill.pink{background:var(--pink);border-color:var(--pink)}

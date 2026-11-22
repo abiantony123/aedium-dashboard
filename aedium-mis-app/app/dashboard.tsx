@@ -57,6 +57,8 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const text = ins.narrative;
   const [tab, setTab] = useState<Tab>("brief");
   const [nameFilter, setNameFilter] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchWrapRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [span, setSpan] = useState<6 | 12>(6);
   const [studioMode, setStudioMode] = useState<"recorded" | "projected">("recorded");
@@ -255,11 +257,206 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     </label>
   );
 
+  useEffect(() => {
+    const onDocDown = (e: MouseEvent) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, []);
+
   const run = (p: Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await p; setToast(r.message); });
   const initials = email.startsWith("demo-") ? ({ admin: "PM", ceo: "CE", project_manager: "PD", finance: "FN", hr: "HR", employee: "EM" } as Record<Role, string>)[role]
     : (email.split("@")[0].split(/[._-]/).map((x) => x[0]).join("").slice(0, 2) || "?").toUpperCase();
   const month = monthLabel(d.reportMonth);
+  const q = nameFilter.trim().toLowerCase();
+
+  type FilteredStudio = ClientNode["projects"][number]["studios"][number] & { _partial?: boolean };
+  type FilteredProject = Omit<ClientNode["projects"][number], "studios"> & { studios: FilteredStudio[] };
+  type FilteredClient = Omit<ClientNode, "projects"> & { projects: FilteredProject[] };
+
+  const matchedClients = useMemo<FilteredClient[]>(() => {
+    const matches = (s: string | null | undefined) => !!s && s.toLowerCase().includes(q);
+    const base = d.client
+      ? d.clients.filter((c) => c.client === d.client)
+      : d.project
+        ? d.clients.filter((c) => c.projects.some((p) => p.project_number === d.project))
+        : d.clients;
+    return base.map((c) => {
+      const clientHit = !q || matches(c.client);
+      const projects = c.projects
+        .filter((p) => !d.project || p.project_number === d.project)
+        .map((p) => {
+          const projHit = clientHit || [p.name, p.project_number, p.location, p.type].some(matches);
+          const studios = p.studios
+            .filter((s) => !d.studio || s.studio === d.studio)
+            .map((s) => {
+              const studHit = projHit || [s.studio, s.spoc, s.stage].some(matches);
+              const stages = s.stages
+                .filter((st) => d.stage == null || st.id === d.stage)
+                .filter((st) => studHit || matches(st.stage));
+              if (!studHit && stages.length === 0) return null;
+              if (d.stage != null && stages.length === 0) return null;
+              return { ...s, stages, _partial: !studHit && stages.length < s.stages.length } as FilteredStudio;
+            })
+            .filter((s): s is FilteredStudio => s !== null);
+          if (studios.length === 0) return null;
+          return { ...p, studios };
+        })
+        .filter((p): p is FilteredProject => p !== null);
+      if (projects.length === 0) return null;
+      return { ...c, projects };
+    }).filter((c): c is FilteredClient => c !== null);
+  }, [d.clients, d.client, d.project, d.studio, d.stage, q]);
+
+  const searchResults = useMemo(() => {
+    if (!q) return [];
+    const pick = (applyFn: () => void) => () => { setSearchOpen(false); setNameFilter(""); applyFn(); };
+    type SearchHit = { key: string; kind: "Client" | "Project" | "Studio" | "Milestone"; tone: string; title: string; sub: string; val: number; apply: () => void };
+    const clientsOut: SearchHit[] = [];
+    const projectsOut: SearchHit[] = [];
+    const studiosOut: SearchHit[] = [];
+    const stagesOut: SearchHit[] = [];
+    for (const c of matchedClients) {
+      if (c.client.toLowerCase().includes(q) && clientsOut.length < 4) {
+        clientsOut.push({
+          key: `c:${c.client}`, kind: "Client", tone: "t-pink",
+          title: c.client, sub: `${plural(c.projects.length, "project")} · ${plural(c.lines, "studio")}`, val: c.contract,
+          apply: pick(() => setClient(c.client)),
+        });
+      }
+      for (const p of c.projects) {
+        if ([p.name, p.project_number, p.location, p.type].some((x) => x?.toLowerCase().includes(q)) && projectsOut.length < 5) {
+          projectsOut.push({
+            key: `p:${c.client}:${p.project_number}`, kind: "Project", tone: "t-blue",
+            title: `${p.name ?? p.project_number} (${p.project_number})`,
+            sub: `${c.client}${p.location ? ` · ${p.location}` : ""} · ${plural(p.studios.length, "studio")}`,
+            val: p.contract,
+            apply: pick(() => setProject(p.project_number, c.client)),
+          });
+        }
+        for (const s of p.studios) {
+          if ([s.studio, s.spoc, s.stage].some((x) => x?.toLowerCase().includes(q)) && studiosOut.length < 4) {
+            studiosOut.push({
+              key: `s:${p.project_number}:${s.studio ?? ""}:${studiosOut.length}`, kind: "Studio", tone: "t-amber",
+              title: `${s.studio ?? "Unassigned"} · ${p.name ?? p.project_number}`,
+              sub: `${c.client} · ${p.project_number} · ${plural(s.stages.length, "milestone")}`,
+              val: s.value,
+              apply: pick(() => {
+                const u = new URL(location.href);
+                u.searchParams.set("client", c.client);
+                u.searchParams.set("project", p.project_number);
+                if (s.studio && !(role === "project_manager" && roleStudio)) u.searchParams.set("studio", s.studio);
+                u.searchParams.delete("stage");
+                start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+              }),
+            });
+          }
+          for (const st of s.stages) {
+            if (st.stage?.toLowerCase().includes(q) && stagesOut.length < 5) {
+              stagesOut.push({
+                key: `st:${st.id}`, kind: "Milestone", tone: "t-green",
+                title: `#${st.seq} ${shorten(st.stage, 54)}`,
+                sub: `${c.client} · ${p.project_number} · ${s.studio ?? "—"}`,
+                val: Number(st.fee) || 0,
+                apply: pick(() => setStage(st.id, { client: c.client, project: p.project_number, studio: s.studio })),
+              });
+            }
+          }
+        }
+      }
+    }
+    return [...clientsOut, ...projectsOut, ...studiosOut, ...stagesOut].slice(0, 12);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchedClients, q, role, roleStudio]);
+
+  const cashView = useMemo(() => {
+    if (!q) {
+      return {
+        kpi: d.kpi,
+        pipeline: d.pipeline,
+        open: d.open,
+        lastPay: d.lastPay,
+        timeline: d.timeline.map((l) => ({
+          key: String(l.id), title: l.client_name ?? l.project_number,
+          sub: `${l.studio ?? "—"} · ${l.project_stage ?? l.status ?? "No stage recorded"}`,
+          val: l.split_value ?? 0, pct: l.billed_pct ?? 0,
+        })),
+      };
+    }
+    const pns = new Set<string>();
+    const lineKeys = new Set<string>();
+    const stageIds = new Set<number>();
+    const projNames = new Set<string>();
+    const clientNames = new Set<string>();
+    let contract = 0, billedTotal = 0, yetToBill = 0;
+    const tlCandidates: { key: string; title: string; sub: string; val: number; pct: number }[] = [];
+    for (const c of matchedClients) {
+      clientNames.add(c.client.toLowerCase());
+      for (const p of c.projects) {
+        pns.add(p.project_number);
+        if (p.name) projNames.add(p.name.toLowerCase());
+        p.studios.forEach((s, si) => {
+          lineKeys.add(`${p.project_number}|${s.studio ?? ""}`);
+          for (const st of s.stages) stageIds.add(st.id);
+          if (s._partial) {
+            for (const st of s.stages) {
+              const fee = Number(st.fee) || 0;
+              const billed = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+              contract += fee;
+              if (billed) billedTotal += fee; else yetToBill += fee;
+            }
+            const partVal = s.stages.reduce((a, st) => a + (Number(st.fee) || 0), 0);
+            const partBilled = s.stages.filter((st) => st.billed_on || st.workflow_status === "billed" || st.workflow_status === "invoiced").reduce((a, st) => a + (Number(st.fee) || 0), 0);
+            tlCandidates.push({
+              key: `${p.project_number}-${s.studio ?? ""}-${si}`,
+              title: `${c.client} · ${shorten(p.name ?? p.project_number, 26)}`,
+              sub: `${s.studio ?? "—"} · ${s.stages.map((st) => st.stage).filter(Boolean).join(", ") || "Milestone"}`,
+              val: partVal, pct: partVal ? partBilled / partVal : 0,
+            });
+          } else {
+            contract += s.value;
+            billedTotal += s.billed;
+            yetToBill += s.yetToBill;
+            tlCandidates.push({
+              key: `${p.project_number}-${s.studio ?? ""}-${si}`,
+              title: `${c.client} · ${shorten(p.name ?? p.project_number, 26)}`,
+              sub: `${s.studio ?? "—"} · ${s.stage ?? s.status ?? "No stage recorded"}`,
+              val: s.value, pct: s.billedPct ?? 0,
+            });
+          }
+        });
+      }
+    }
+    const open = d.open.filter((i) => {
+      if (d.stage != null) return true;
+      if (i.project_number && pns.has(i.project_number)) {
+        return !i.studio || lineKeys.has(`${i.project_number}|${i.studio}`);
+      }
+      return clientNames.has((i.client_name ?? i.customer_name ?? "").toLowerCase());
+    });
+    const outstanding = open.reduce((a, i) => a + (Number(i.balance) || 0), 0);
+    const late = open.filter((i) => i.days_overdue > 0).reduce((a, i) => a + (Number(i.balance) || 0), 0);
+    const monthPays = d.payments.filter((p) => {
+      if (!p.date.startsWith(d.reportMonth)) return false;
+      const lbl = (p.project ?? "").toLowerCase();
+      return lbl && (projNames.has(lbl) || clientNames.has(lbl) || [...pns].some((pn) => lbl.includes(pn.toLowerCase())));
+    });
+    const collectedMonth = monthPays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
+    const lastPay = [...monthPays].sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
+    const pipeline = d.pipeline.map((p) => {
+      const items = p.items.filter((item) => stageIds.has(item.id));
+      return { ...p, count: items.length, value: items.reduce((a, x) => a + (Number(x.fee) || 0), 0), top: items[0] ?? null, items };
+    });
+    const timeline = tlCandidates.sort((a, b) => b.val - a.val).slice(0, 6);
+    return {
+      kpi: { ...d.kpi, contract, billedTotal, yetToBill, outstanding, late, collectedMonth, openCount: open.length },
+      pipeline, open, lastPay, timeline,
+    };
+  }, [q, matchedClients, d.kpi, d.pipeline, d.open, d.lastPay, d.timeline, d.payments, d.reportMonth, d.stage]);
+
   const k = d.kpi;
+  const ck = cashView.kpi;
   const latePct = k.outstanding ? Math.round((k.late / k.outstanding) * 100) : 0;
   const top3 = d.studios.slice(0, 3);
   const tcvTotal = d.studios.reduce((s, x) => s + x.tcv, 0) || 1;
@@ -353,18 +550,59 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= CASH ================= */}
       <main className="screen hero" hidden={tab !== "cash" || !show("cash")}>
-        <div className="eyebrow">Stage-to-cash · {month}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}{d.studio ? ` · ${d.studio}` : ""}{d.stage ? ` · Milestone #${d.stage}` : ""}</div>
+        <div className="eyebrow">Stage-to-cash · {month}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}{d.studio ? ` · ${d.studio}` : ""}{d.stage ? ` · Milestone #${d.stage}` : ""}{q ? ` · Search: "${nameFilter.trim()}"` : ""}</div>
         <div className="b-head">
           <h1>Every rupee, <em>from sign-off to bank.</em></h1>
           <div className="acts">
-            <input
-              className="pill name-filter"
-              type="search"
-              aria-label="Filter by name"
-              placeholder="Search client, project, studio, milestone…"
-              value={nameFilter}
-              onChange={(e) => setNameFilter(e.target.value)}
-            />
+            <div className="search-wrap" ref={searchWrapRef}>
+              <input
+                className="pill name-filter"
+                type="search"
+                aria-label="Filter by name"
+                placeholder="Search client, project, studio, milestone…"
+                value={nameFilter}
+                onFocus={() => setSearchOpen(true)}
+                onChange={(e) => { setNameFilter(e.target.value); setSearchOpen(true); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setSearchOpen(false);
+                  if (e.key === "Enter" && searchResults.length > 0) {
+                    e.preventDefault();
+                    searchResults[0].apply();
+                  }
+                }}
+              />
+              {searchOpen && q.length > 0 && (
+                <div className="search-pop" role="listbox" aria-label="Search matches">
+                  {searchResults.length === 0 ? (
+                    <div className="search-empty">No clients, projects, studios, or milestones match “{nameFilter.trim()}”.</div>
+                  ) : (
+                    searchResults.map((hit) => (
+                      <button key={hit.key} type="button" className="search-item" role="option" aria-selected="false" onClick={hit.apply}>
+                        <span className={`tag ${hit.tone}`}>{hit.kind}</span>
+                        <span className="search-txt">
+                          <b>{hit.title}</b>
+                          <small>{hit.sub}</small>
+                        </span>
+                        <span className="num search-val">{inr(hit.val)}</span>
+                      </button>
+                    ))
+                  )}
+                  <button
+                    type="button"
+                    className="search-foot"
+                    onClick={() => {
+                      setSearchOpen(false);
+                      if (matchedClients.length > 0) document.querySelector(".ctree")?.scrollIntoView({ behavior: "smooth" });
+                      else setNameFilter("");
+                    }}
+                  >
+                    {matchedClients.length > 0
+                      ? `Live filter active: “${nameFilter.trim()}” (${plural(matchedClients.length, "client")}) · Jump to milestones ↓`
+                      : `Clear search`}
+                  </button>
+                </div>
+              )}
+            </div>
             {clientPick}
             {projectPick}
             {studioPick}
@@ -374,14 +612,14 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           </div>
         </div>
         <div className="b-kpis num">
-          <div><label>{d.stage ? "Milestone value" : d.studio ? "Studio value" : d.project ? "Project value" : "Contract value"}</label><div className="kpill">{inr(k.contract)}</div></div>
-          <div><label>Billed to date{k.contract ? ` · ${Math.round((k.billedTotal / k.contract) * 100)}%` : ""}</label><div className="kpill light">{inr(k.billedTotal)}</div></div>
-          <div><label>Yet to bill</label><div className="kpill">{inr(k.yetToBill)}</div></div>
-          <div><label>Outstanding</label><div className="kpill pink">{inr(k.outstanding)}</div></div>
-          <div><label>Collected ({month.split(" ")[0]})</label><div className="kpill stripe">{inr(k.collectedMonth)}</div></div>
+          <div><label>{d.stage ? "Milestone value" : q ? "Matching value" : d.studio ? "Studio value" : d.project ? "Project value" : "Contract value"}</label><div className="kpill">{inr(ck.contract)}</div></div>
+          <div><label>Billed to date{ck.contract ? ` · ${Math.round((ck.billedTotal / ck.contract) * 100)}%` : ""}</label><div className="kpill light">{inr(ck.billedTotal)}</div></div>
+          <div><label>Yet to bill</label><div className="kpill">{inr(ck.yetToBill)}</div></div>
+          <div><label>Outstanding</label><div className="kpill pink">{inr(ck.outstanding)}</div></div>
+          <div><label>Collected ({month.split(" ")[0]})</label><div className="kpill stripe">{inr(ck.collectedMonth)}</div></div>
         </div>
         <div className="stages">
-          {d.pipeline.map((p, i) => (
+          {cashView.pipeline.map((p, i) => (
             <section key={p.status} className="card stage">
               <div className="shead"><span>{["STAGE COMPLETE", "CLIENT APPROVED", "FINANCE NOTIFIED"][i]}</span><i className="step">{i + 1}</i></div>
               <div className="n num">{p.count}</div>
@@ -403,17 +641,17 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           ))}
           <section className="card stage hot">
             <div className="shead"><span>INVOICED, UNPAID</span><i className="step">4</i></div>
-            <div className="n num">{inr(k.outstanding)}</div>
-            <div className="what">{k.openCount} open · {inr(k.late)} late</div>
-            {[...d.open].sort((a, b) => b.balance - a.balance || b.days_overdue - a.days_overdue).slice(0, 2).map((i) => (
+            <div className="n num">{inr(ck.outstanding)}</div>
+            <div className="what">{ck.openCount} open · {inr(ck.late)} late</div>
+            {[...cashView.open].sort((a, b) => b.balance - a.balance || b.days_overdue - a.days_overdue).slice(0, 2).map((i) => (
               <div key={i.invoice_id} className="sbox"><b>{i.invoice_number} · {inr(i.balance)}</b><div className="v">{i.project_name ?? i.customer_name}</div><div className="s">{i.days_overdue ? `${i.days_overdue} days overdue` : `Due ${niceDate(i.due_date)}`}</div></div>
             ))}
           </section>
           <section className="card stage">
             <div className="shead"><span>COLLECTED</span><i className="step">5</i></div>
-            <div className="n num">{inr(k.collectedMonth)}</div>
+            <div className="n num">{inr(ck.collectedMonth)}</div>
             <div className="what">Net of TDS · {month}</div>
-            {d.lastPay ? <div className="sbox"><b>{d.lastPay.payment_number} · {d.lastPay.project ?? "receipt"}</b><div className="v">{inr(d.lastPay.amount)} · {inr(d.lastPay.tax_amount_withheld)} TDS</div><div className="s">Matched in Zoho Books</div></div>
+            {cashView.lastPay ? <div className="sbox"><b>{cashView.lastPay.payment_number} · {cashView.lastPay.project ?? "receipt"}</b><div className="v">{inr(cashView.lastPay.amount)} · {inr(cashView.lastPay.tax_amount_withheld)} TDS</div><div className="s">Matched in Zoho Books</div></div>
               : <div className="sbox"><b>No receipts in {month}</b><div className="v">Zoho Books{d.zohoIsSample ? " sample data" : ""}</div></div>}
           </section>
         </div>
@@ -422,16 +660,16 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <div className="ahead"><h2>Project cash timeline</h2><div className="legend"><span><i style={{ border: "1.5px solid var(--muted)" }} />Contract</span><span><i style={{ background: "var(--blue-soft)" }} />Billed</span><span>Largest active lines · master tracker</span></div></div>
             <div className="tl">
               <div /><div className="cols"><span>CONCEPT</span><span>DESIGN</span><span>SANCTION</span><span>GFC</span><span>BUILD</span></div>
-              {d.timeline.map((l) => (
-                <Fragment2 key={l.id}>
-                  <div className="pname"><b>{l.client_name ?? l.project_number}</b><span>{l.studio} · {l.project_stage ?? l.status ?? "No stage recorded"}</span></div>
-                  <div className="bar" title={`${inr(l.split_value)} contract · ${Math.round((l.billed_pct ?? 0) * 100)}% billed`}><i className="b1" style={{ width: `${Math.min(100, (l.billed_pct ?? 0) * 100)}%` }} /></div>
+              {cashView.timeline.length === 0 ? <p className="note" style={{ gridColumn: "1/-1" }}>No active lines match this filter.</p> : cashView.timeline.map((l) => (
+                <Fragment2 key={l.key}>
+                  <div className="pname"><b>{l.title}</b><span>{l.sub}</span></div>
+                  <div className="bar" title={`${inr(l.val)} contract · ${Math.round(l.pct * 100)}% billed`}><i className="b1" style={{ width: `${Math.min(100, l.pct * 100)}%` }} /></div>
                 </Fragment2>
               ))}
             </div>
           </section>
           <div className="b-right">
-            <Ageing open={d.open} />
+            <Ageing open={cashView.open} />
             <section className="aicol">
               <div className="eyebrow">AI · Collections</div>
               <p className={`swap${ins.loading ? " loading" : ""}`} key={ins.source}>{text.collections_note}</p>
@@ -440,7 +678,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           </div>
         </div>
         <ClientTree
-          clients={d.clients}
+          clients={matchedClients}
           selectedClient={d.client}
           selectedProject={d.project}
           selectedStudio={d.studio}
@@ -812,7 +1050,7 @@ const STAGE_CAT_LABEL: Record<ClientStageNode["category"], { label: string; tone
 };
 
 function ClientTree({
-  clients, selectedClient, selectedProject, selectedStudio, selectedStage, nameFilter,
+  clients: visibleClients, selectedClient, selectedProject, selectedStudio, selectedStage, nameFilter,
   onPickClient, onPickProject, onPickStudio, onPickStage, role, pending, onMarkStage,
 }: {
   clients: ClientNode[];
@@ -830,40 +1068,6 @@ function ClientTree({
   onMarkStage: (s: { project_number: string; studio: string | null; seq: number; event: "complete" | "client_approved" | "finance_notified" }) => void;
 }) {
   const q = nameFilter.trim().toLowerCase();
-  const matches = (s: string | null | undefined) => !!s && s.toLowerCase().includes(q);
-  const visibleClients = useMemo(() => {
-    const base = selectedClient
-      ? clients.filter((c) => c.client === selectedClient)
-      : selectedProject
-        ? clients.filter((c) => c.projects.some((p) => p.project_number === selectedProject))
-        : clients;
-    return base.map((c) => {
-      const clientHit = !q || matches(c.client);
-      const projects = c.projects
-        .filter((p) => !selectedProject || p.project_number === selectedProject)
-        .map((p) => {
-          const projHit = clientHit || [p.name, p.project_number, p.location, p.type].some(matches);
-          const studios = p.studios
-            .filter((s) => !selectedStudio || s.studio === selectedStudio)
-            .map((s) => {
-              const studHit = projHit || [s.studio, s.spoc, s.stage].some(matches);
-              const stages = s.stages
-                .filter((st) => !selectedStage || st.id === selectedStage)
-                .filter((st) => studHit || matches(st.stage));
-              if (!studHit && stages.length === 0) return null;
-              if (selectedStage != null && stages.length === 0) return null;
-              return { ...s, stages };
-            })
-            .filter((s): s is NonNullable<typeof s> => s !== null);
-          if (studios.length === 0) return null;
-          return { ...p, studios };
-        })
-        .filter((p): p is NonNullable<typeof p> => p !== null);
-      if (projects.length === 0) return null;
-      return { ...c, projects };
-    }).filter((c): c is NonNullable<typeof c> => c !== null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clients, selectedClient, selectedProject, selectedStudio, selectedStage, q]);
 
   return (
     <section className="card ctree">
