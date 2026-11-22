@@ -69,10 +69,26 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const [pending, start] = useTransition();
   const dialog = useRef<HTMLDialogElement>(null);
 
+  const tabsKey = TABS.join(",");
   useEffect(() => {
-    const read = () => { const h = location.hash.slice(1) as Tab; setTab(TABS.includes(h) ? h : TABS[0]); };
-    read(); addEventListener("hashchange", read); return () => removeEventListener("hashchange", read);
-  }, [TABS]);
+    const syncHash = () => {
+      const h = location.hash.slice(1) as Tab;
+      if (TABS.includes(h)) {
+        setTab(h);
+        window.history.replaceState(null, "", location.pathname + location.search + location.hash);
+      }
+    };
+    const init = location.hash.slice(1) as Tab;
+    if (TABS.includes(init)) {
+      setTab(init);
+      window.history.replaceState(null, "", location.pathname + location.search + location.hash);
+    } else {
+      setTab((prev) => (TABS.includes(prev) ? prev : TABS[0]));
+    }
+    addEventListener("hashchange", syncHash);
+    return () => removeEventListener("hashchange", syncHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabsKey]);
   const setMonth = (m: string) => {
     const u = new URL(location.href); u.searchParams.set("month", m);
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
@@ -80,7 +96,12 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 4200); return () => clearTimeout(t); }, [toast]);
   // Live: pick up changes made elsewhere (another person, or an AI assistant through the MCP server).
   useEffect(() => {
-    const tick = () => { if (document.visibilityState === "visible") router.refresh(); };
+    const tick = () => {
+      if (document.visibilityState === "visible") {
+        if (location.hash) window.history.replaceState(null, "", location.pathname + location.search + location.hash);
+        router.refresh();
+      }
+    };
     const id = setInterval(tick, 30000);
     addEventListener("focus", tick); document.addEventListener("visibilitychange", tick);
     return () => { clearInterval(id); removeEventListener("focus", tick); document.removeEventListener("visibilitychange", tick); };
