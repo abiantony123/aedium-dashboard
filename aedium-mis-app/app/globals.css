@@ -87,7 +87,7 @@ h2{font-size:21px;font-weight:400;margin:0;letter-spacing:-.005em}
 
 /* ---------- B · Cash ---------- */
 .b-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
-.b-head .acts{display:flex;gap:9px;padding-bottom:4px}
+.b-head .acts{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;padding-bottom:4px}
 .b-kpis{display:grid;grid-template-columns:660fr 480fr 326fr 327fr;gap:11px;margin-top:22px}
 .b-kpis label{display:block;font-size:15.5px;color:var(--muted);padding-left:8px;margin-bottom:9px}
 .kpill{height:52px;border-radius:999px;display:flex;align-items:center;padding:0 22px;font-size:20px;background:var(--surface);border:1px solid var(--raised)}
@@ -427,7 +427,7 @@ dialog.sheet .row{display:flex;gap:8px;justify-content:flex-end;margin-top:22px;
 /* ---------- studio filter, badge, fields ---------- */
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .studio-pick{position:relative;padding:0}
-.studio-pick select{appearance:none;background:transparent;border:0;color:inherit;font:inherit;height:100%;padding:0 38px 0 20px;cursor:pointer;border-radius:999px}
+.studio-pick select{appearance:none;background:transparent;border:0;color:inherit;font:inherit;height:100%;max-width:240px;text-overflow:ellipsis;padding:0 38px 0 20px;cursor:pointer;border-radius:999px}
 .studio-pick::after{content:"";position:absolute;right:17px;top:50%;width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-70%) rotate(45deg);pointer-events:none}
 .studio-pick select option{background:var(--surface);color:var(--fg)}
 .icon{position:relative}
@@ -567,24 +567,45 @@ dialog.sheet{max-height:calc(100vh - 48px);overflow:auto}
   .po-stages>div{grid-template-columns:1fr auto;} .po-stages>div span:nth-child(2){grid-column:1/-1}
   .tools .xls{display:none}
 }
-/* ---------- client -> project tree (Cash) ---------- */
+/* ---------- client -> project -> studio -> billing stages tree (Cash) ---------- */
+.slist{display:grid;gap:10px;max-height:265px;overflow:auto;margin-top:13px;padding-right:2px}
+.slist .sbox{margin-top:0}
 .ctree{margin-top:18px;padding:24px 28px}
 .ctree .ahead{margin-bottom:10px}
 .cnode{border-top:1px solid #2A2A30}
 .cnode summary{display:grid;grid-template-columns:minmax(120px,1.4fr) 1.2fr auto minmax(150px,1.2fr);gap:14px;align-items:baseline;padding:13px 4px;cursor:pointer;list-style:none}
 .cnode summary::-webkit-details-marker{display:none}
 .cnode summary::before{content:"▸";position:absolute;margin-left:-14px;color:var(--muted)}
-.cnode[open] summary::before{content:"▾"}
+.cnode[open]>summary::before{content:"▾"}
 .cnode{position:relative;padding-left:14px}
 .cmeta{color:var(--muted);font-size:13.5px}
 .cproj{padding:4px 0 16px;display:grid;gap:10px}
-.cproj>.pill{justify-self:start;height:34px;font-size:13.5px}
-.cproj .prow{display:grid;grid-template-columns:minmax(160px,1.6fr) auto 2fr;gap:14px;align-items:center;background:var(--raised);border-radius:14px;padding:12px 16px}
-.cproj .pname{display:flex;flex-direction:column;gap:3px}
-.cproj .pname span,.cproj .pval small{color:var(--muted);font-size:13px}
-.cproj .pval{display:flex;flex-direction:column;align-items:flex-end}
-.cproj .pstud{display:flex;flex-wrap:wrap;gap:6px}
-@media (max-width:760px){ .ctree{padding:20px 16px} .cnode summary{grid-template-columns:1fr auto} .cproj .prow{grid-template-columns:1fr auto} .cproj .pstud{grid-column:1/-1} }
+.tree-acts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tree-acts .pill{height:32px;font-size:13px;padding:0 14px}
+.pnode{background:var(--raised);border-radius:16px;padding:4px 16px}
+.pnode>summary{display:grid;grid-template-columns:minmax(180px,2fr) auto minmax(170px,1fr);gap:14px;align-items:center;padding:12px 0 12px 16px;position:relative;cursor:pointer;list-style:none}
+.pnode>summary::-webkit-details-marker{display:none}
+.pnode>summary::before{content:"▸";position:absolute;left:0;color:var(--muted)}
+.pnode[open]>summary::before{content:"▾"}
+.pnode .pname,.snode .cmeta{display:flex;flex-direction:column;gap:3px}
+.pnode .pname span,.pnode .pval small,.snode .pval small{color:var(--muted);font-size:13px;display:block}
+.pnode .pval,.snode .pval{display:flex;flex-direction:column;align-items:flex-end}
+.sbox-tree{padding:2px 0 14px;display:grid;gap:10px;border-top:1px solid #2A2A30;padding-top:12px}
+.snode{background:var(--bg);border:1px solid #26262C;border-radius:14px;padding:2px 14px}
+.snode>summary{display:grid;grid-template-columns:minmax(150px,1.4fr) auto minmax(160px,1fr);gap:14px;align-items:center;padding:11px 0 11px 16px;position:relative;cursor:pointer;list-style:none}
+.snode>summary::-webkit-details-marker{display:none}
+.snode>summary::before{content:"▸";position:absolute;left:0;color:var(--muted)}
+.snode[open]>summary::before{content:"▾"}
+.smeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.sbody{display:grid;gap:10px;padding:10px 0 12px;border-top:1px solid #26262C}
+.st-wrap{overflow:auto;border:1px solid #26262C;border-radius:10px}
+.st-table{width:100%;min-width:700px;border-collapse:collapse;font-size:13.5px}
+.st-table th,.st-table td{padding:8px 10px;border-bottom:1px solid #222228;text-align:left;vertical-align:middle}
+.st-table th{background:var(--raised);color:var(--muted);font-weight:500;font-size:12.5px}
+.st-table tr:last-child td{border-bottom:0}
+.st-table th.r,.st-table td.r{text-align:right;white-space:nowrap}
+.st-table .pill{height:28px;font-size:12.5px;padding:0 12px}
+@media (max-width:760px){ .ctree{padding:20px 16px} .cnode summary,.pnode>summary,.snode>summary{grid-template-columns:1fr auto} .smeta{grid-column:1/-1} }
 /* ---------- construction start (Plan) ---------- */
 .p-cons{padding:24px 28px;margin-top:18px}
 .p-cons .dhead{margin-bottom:8px}

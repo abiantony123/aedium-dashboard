@@ -49,7 +49,7 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
   }
 }
 
-export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null) {
+export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null, project?: string | null) {
   const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan, cplanFallback] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
@@ -97,9 +97,10 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
   };
   const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort();
   const inStudio = studio ? filterStudio(raw, studio) : raw;
-  const clients = clientTree(inStudio.lines);   // client list and tree follow the studio filter, not the client filter
-  const scoped = client ? filterClient(inStudio, client) : inStudio;
-  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, clients };
+  const clients = clientTree(inStudio.lines, inStudio.stages);   // client list and tree follow the studio filter, not the client/project filter
+  const byClient = client ? filterClient(inStudio, client) : inStudio;
+  const scoped = project ? filterProject(byClient, project) : byClient;
+  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, project: project ?? null, clients };
 }
 
 // One client's slice. Zoho rows follow the project number on their sales order, invoice reference, or customer name.
@@ -118,27 +119,83 @@ function filterClient(r: Raw, client: string): Raw {
   };
 }
 
-// Client -> project -> studio lines, active lines only. Value is the sum of each studio's own split
+// One project's slice across lines, billing stages, and Zoho invoices/payments.
+function filterProject(r: Raw, project: string): Raw {
+  const soIds = new Set(r.sos.filter((s) => s.project_number === project).map((s) => s.salesorder_id));
+  const invoices = r.invoices.filter((i) => soIds.has(i.salesorder_id ?? "") || i.reference_number === project || i.line_items?.[0]?.project_number === project);
+  const invIds = new Set(invoices.map((i) => i.invoice_id));
+  return {
+    ...r,
+    lines: r.lines.filter((l) => l.project_number === project),
+    stages: r.stages.filter((s) => s.project_number === project),
+    open: r.open.filter((i) => i.project_number === project),
+    invoices, sos: r.sos.filter((s) => soIds.has(s.salesorder_id)),
+    payments: r.payments.filter((p) => p.invoices?.some((x) => invIds.has(x.invoice_id))),
+  };
+}
+
+// Client -> project -> studio lines -> billing stages, active lines only. Value is the sum of each studio's own split
 // (never the repeated project total), so a combined PO is not counted once per studio.
+export type ClientStageNode = {
+  id: number; seq: number; stage: string | null; pct: number | null; fee: number | null; billed_on: string | null;
+  workflow_status: Stage["workflow_status"]; last_event_at: string | null;
+  category: "advance" | "design" | "construction";
+};
+export type ClientStudioNode = {
+  studio: string | null; value: number; splitPct: number | null; billed: number; billedPct: number | null; yetToBill: number;
+  designValue: number; constructionValue: number; stage: string | null; spoc: string | null; status: string | null;
+  stages: ClientStageNode[];
+};
+export type ClientProjectNode = {
+  project_number: string; name: string | null; location: string | null; type: string | null;
+  validity: string | null; start_date: string | null; end_date: string | null;
+  contract: number; billed: number; yetToBill: number; studios: ClientStudioNode[];
+};
 export type ClientNode = {
   client: string; contract: number; billed: number; yetToBill: number; lines: number;
-  projects: { project_number: string; name: string | null; location: string | null; type: string | null; contract: number; billed: number; yetToBill: number;
-    studios: { studio: string | null; value: number; billedPct: number | null; stage: string | null }[] }[];
+  projects: ClientProjectNode[];
 };
-export function clientTree(lines: Line[]): ClientNode[] {
+const stageCategory = (name: string | null): "advance" | "design" | "construction" => {
+  if (/instal|monthly|construction stage/i.test(name ?? "")) return "construction";
+  if (/advance|appointment|mobilis|upon signing|confirmation of order/i.test(name ?? "")) return "advance";
+  return "design";
+};
+export function clientTree(lines: Line[], stages: Stage[] = []): ClientNode[] {
   const byClient = new Map<string, Map<string, Line[]>>();
   for (const l of lines.filter(isActive)) {
     const c = l.client_name?.trim() || "Unassigned";
     const projects = byClient.get(c) ?? new Map<string, Line[]>(); byClient.set(c, projects);
     projects.set(l.project_number, [...(projects.get(l.project_number) ?? []), l]);
   }
+  const stagesByKey = new Map<string, Stage[]>();
+  for (const s of stages) {
+    const k = `${s.project_number}|${s.studio ?? ""}`;
+    stagesByKey.set(k, [...(stagesByKey.get(k) ?? []), s]);
+  }
+  for (const xs of stagesByKey.values()) xs.sort((a, b) => a.seq - b.seq);
   const n = (v: number | null | undefined) => Number(v) || 0;
   return [...byClient.entries()].map(([client, projects]) => {
-    const ps = [...projects.entries()].map(([project_number, ls]) => ({
-      project_number, name: ls[0].project_name, location: ls[0].location, type: ls[0].project_type,
-      contract: ls.reduce((a, l) => a + n(l.split_value), 0), billed: ls.reduce((a, l) => a + n(l.billed_amount), 0), yetToBill: ls.reduce((a, l) => a + n(l.yet_to_bill_amount), 0),
-      studios: ls.map((l) => ({ studio: l.studio, value: n(l.split_value), billedPct: l.billed_pct, stage: l.project_stage })),
-    })).sort((a, b) => b.contract - a.contract);
+    const ps: ClientProjectNode[] = [...projects.entries()].map(([project_number, ls]) => {
+      const contract = ls.reduce((a, l) => a + n(l.split_value), 0);
+      return {
+        project_number, name: ls[0].project_name, location: ls[0].location, type: ls[0].project_type,
+        validity: ls[0].contract_validity, start_date: ls[0].start_date, end_date: ls[0].end_date,
+        contract, billed: ls.reduce((a, l) => a + n(l.billed_amount), 0), yetToBill: ls.reduce((a, l) => a + n(l.yet_to_bill_amount), 0),
+        studios: ls.map((l) => {
+          const val = n(l.split_value);
+          const sts = (stagesByKey.get(`${project_number}|${l.studio ?? ""}`) ?? []).map((s) => ({
+            id: s.id, seq: s.seq, stage: s.stage, pct: s.pct, fee: s.fee, billed_on: s.billed_on,
+            workflow_status: s.workflow_status, last_event_at: s.last_event_at, category: stageCategory(s.stage),
+          }));
+          return {
+            studio: l.studio, value: val, splitPct: contract > 0 ? val / contract : null,
+            billed: n(l.billed_amount), billedPct: l.billed_pct, yetToBill: n(l.yet_to_bill_amount),
+            designValue: n(l.design_value), constructionValue: n(l.construction_value),
+            stage: l.project_stage, spoc: l.spoc, status: l.status, stages: sts,
+          };
+        }),
+      };
+    }).sort((a, b) => b.contract - a.contract);
     return { client, contract: ps.reduce((a, p) => a + p.contract, 0), billed: ps.reduce((a, p) => a + p.billed, 0), yetToBill: ps.reduce((a, p) => a + p.yetToBill, 0), lines: ps.reduce((a, p) => a + p.studios.length, 0), projects: ps };
   }).sort((a, b) => b.contract - a.contract);
 }
@@ -191,8 +248,8 @@ export function build(r: Raw) {
   // ---- stage pipeline (cards 1-3) ----
   const byStatus = (st: Stage["workflow_status"]) => r.stages.filter((s) => s.workflow_status === st).sort((a, b) => (b.fee ?? 0) - (a.fee ?? 0));
   const pipeline = (["complete", "client_approved", "finance_notified"] as const).map((st) => {
-    const xs = byStatus(st);
-    return { status: st, count: xs.length, value: sum(xs, (s) => s.fee), top: xs[0] ? { ...xs[0], label: label(xs[0]) } : null };
+    const xs = byStatus(st).map((s) => ({ ...s, label: label(s) }));
+    return { status: st, count: xs.length, value: sum(xs, (s) => s.fee), top: xs[0] ?? null, items: xs };
   });
 
   // ---- contracts: active lines still billable, nearest end date first ----

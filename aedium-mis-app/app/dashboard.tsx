@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { Dash, ClientNode } from "@/lib/data";
+import type { Dash, ClientNode, ClientStageNode } from "@/lib/data";
 import { inr, monthLabel, shortMonth, niceDate, timeOf, greeting } from "@/lib/format";
 import { markStage, decide, signOut, getDraft, getEscalationDraft, runComplianceDecision } from "./actions";
 import type { ComplianceItem, EmailCitation } from "@/lib/compliance";
@@ -26,7 +26,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 type Draft = { to: string; subject: string; body: string };
 type Props = {
-  data: Dash & { studio: string | null; allStudios: string[]; client: string | null; clients: ClientNode[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
+  data: Dash & { studio: string | null; allStudios: string[]; client: string | null; project: string | null; clients: ClientNode[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
   origin: string; keys: KeyInfo[]; runs: Run[]; setupError: string | null; findings: Finding[]; ruleText: NarrativeT;
   plan: Awaited<ReturnType<typeof fyPlan>> | null; escalations: Awaited<ReturnType<typeof escalations>>; projection: Awaited<ReturnType<typeof projection>> | null; month: string;
   financeQueue: Awaited<ReturnType<typeof financeQueue>>; pos: Awaited<ReturnType<typeof listPos>>;
@@ -46,14 +46,14 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   useEffect(() => {
     let live = true;
     setIns((x) => ({ ...x, loading: true }));
-    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client);
+    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client); if (d.project) qs.set("project", d.project);
     fetch(`/api/insights${qs.size ? `?${qs}` : ""}`)
       .then((r) => r.json())
       .then((j) => { if (live) setIns({ narrative: j.narrative ?? ruleText, source: j.source ?? "rules", generated_at: j.generated_at ?? null, loading: false }); })
       .catch(() => { if (live) setIns({ narrative: ruleText, source: "rules", generated_at: null, loading: false }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey, d.studio, d.client]);
+  }, [findingsKey, d.studio, d.client, d.project]);
   const text = ins.narrative;
   const [tab, setTab] = useState<Tab>("brief");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -122,8 +122,38 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const setClient = (c: string) => {
     const u = new URL(location.href);
     if (c) u.searchParams.set("client", c); else u.searchParams.delete("client");
+    if (d.project) {
+      const owns = c ? d.clients.find((x) => x.client === c)?.projects.some((p) => p.project_number === d.project) : false;
+      if (!owns) u.searchParams.delete("project");
+    }
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
+  const setProject = (pn: string, clientName?: string) => {
+    const u = new URL(location.href);
+    if (pn) {
+      u.searchParams.set("project", pn);
+      const owner = clientName ?? d.clients.find((c) => c.projects.some((p) => p.project_number === pn))?.client;
+      if (owner) u.searchParams.set("client", owner);
+    } else {
+      u.searchParams.delete("project");
+    }
+    start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+  };
+  const resetFilters = () => {
+    const u = new URL(location.href);
+    u.searchParams.delete("client");
+    u.searchParams.delete("project");
+    if (!(role === "project_manager" && roleStudio)) u.searchParams.delete("studio");
+    start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+  };
+  const projectOptions = useMemo(() => {
+    const src = d.client ? d.clients.filter((c) => c.client === d.client) : d.clients;
+    return src.flatMap((c) => c.projects.map((p) => ({
+      project_number: p.project_number,
+      client: c.client,
+      label: d.client ? `${p.name ?? p.project_number} (${p.project_number})` : `${c.client} · ${p.name ?? p.project_number} (${p.project_number})`,
+    }))).sort((a, b) => a.label.localeCompare(b.label));
+  }, [d.clients, d.client]);
   const clientPick = (
     <label className="pill studio-pick">
       <span className="sr">Client</span>
@@ -131,6 +161,16 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         <option value="">All clients</option>
         {d.clients.map((c) => <option key={c.client} value={c.client}>{c.client}</option>)}
         {d.client && !d.clients.some((c) => c.client === d.client) && <option value={d.client}>{d.client}</option>}
+      </select>
+    </label>
+  );
+  const projectPick = (
+    <label className="pill studio-pick">
+      <span className="sr">Project</span>
+      <select aria-label="Project" value={d.project ?? ""} onChange={(e) => setProject(e.target.value)}>
+        <option value="">All projects</option>
+        {projectOptions.map((p, idx) => <option key={`${p.client}-${p.project_number}-${idx}`} value={p.project_number}>{p.label}</option>)}
+        {d.project && !projectOptions.some((p) => p.project_number === d.project) && <option value={d.project}>{d.project}</option>}
       </select>
     </label>
   );
@@ -157,6 +197,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     const qs = new URLSearchParams();
     if (d.studio) qs.set("studio", d.studio);
     if (d.client) qs.set("client", d.client);
+    if (d.project) qs.set("project", d.project);
     return `/api/export${qs.size ? `?${qs}` : ""}`;
   })();
 
@@ -179,7 +220,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       {setupError && tab !== "connect" && <div className="banner">{setupError}</div>}
       {/* ================= BRIEF ================= */}
       <main className="screen hero" hidden={tab !== "brief" || !show("brief")}>
-        <div className="eyebrow">Daily brief · {niceDate(d.today)}{d.studio ? ` · ${d.studio}` : ""}</div>
+        <div className="eyebrow">Daily brief · {niceDate(d.today)}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}</div>
         <h1>{greeting()}. <em>Here is what needs you.</em></h1>
         <div className="a-kpis num">
           <div><div className="big">{inr(k.contract)}</div><div className="biglbl">Contract value</div></div>
@@ -241,10 +282,16 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= CASH ================= */}
       <main className="screen hero" hidden={tab !== "cash" || !show("cash")}>
-        <div className="eyebrow">Stage-to-cash · {month}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}</div>
+        <div className="eyebrow">Stage-to-cash · {month}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}</div>
         <div className="b-head">
           <h1>Every rupee, <em>from sign-off to bank.</em></h1>
-          <div className="acts">{clientPick}{studioPick}{can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}</div>
+          <div className="acts">
+            {clientPick}
+            {projectPick}
+            {studioPick}
+            {(d.client || d.project || (d.studio && !(role === "project_manager" && roleStudio))) && <button className="pill" onClick={resetFilters}>Reset filters</button>}
+            {can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}
+          </div>
         </div>
         <div className="b-kpis num">
           <div><label>Contract value</label><div className="kpill">{inr(k.contract)}</div></div>
@@ -258,11 +305,17 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
               <div className="shead"><span>{["STAGE COMPLETE", "CLIENT APPROVED", "FINANCE NOTIFIED"][i]}</span><i className="step">{i + 1}</i></div>
               <div className="n num">{p.count}</div>
               <div className="what">{["Marked by studio directors", "Sign-off captured", "Invoice pending"][i]}{p.count ? ` · ${inr(p.value)}` : ""}</div>
-              {p.top ? (
-                <div className="sbox"><b>{p.top.label} · {shorten(p.top.stage)}</b><div className="v">{inr(p.top.fee)} · {p.top.studio}</div>
-                  <div className="s">{i === 0 ? "Awaiting client approval" : i === 1 ? `Approved ${ago(p.top.last_event_at, d.today)}` : `Waiting ${ago(p.top.last_event_at, d.today, true)}`}</div>
-                  {i < 2 && can(role, i === 0 ? "stage.approve" : "stage.notify_finance") && <button className="pill" style={{ height: 34, marginTop: 10, fontSize: 13.5 }} disabled={pending}
-                    onClick={() => run(markStage({ project_number: p.top!.project_number, studio: p.top!.studio, seq: p.top!.seq, event: i === 0 ? "client_approved" : "finance_notified" }))}>{i === 0 ? "Record approval" : "Send to Finance"}</button>}
+              {p.items.length ? (
+                <div className="slist">
+                  {p.items.map((item) => (
+                    <div key={item.id} className="sbox">
+                      <b>{item.label} · {shorten(item.stage)}</b>
+                      <div className="v">{inr(item.fee)} · {item.studio ?? "—"} · {item.project_number}</div>
+                      <div className="s">{i === 0 ? "Awaiting client approval" : i === 1 ? `Approved ${ago(item.last_event_at, d.today)}` : `Waiting ${ago(item.last_event_at, d.today, true)}`}</div>
+                      {i < 2 && can(role, i === 0 ? "stage.approve" : "stage.notify_finance") && <button className="pill" style={{ height: 34, marginTop: 10, fontSize: 13.5 }} disabled={pending}
+                        onClick={() => run(markStage({ project_number: item.project_number, studio: item.studio, seq: item.seq, event: i === 0 ? "client_approved" : "finance_notified" }))}>{i === 0 ? "Record approval" : "Send to Finance"}</button>}
+                    </div>
+                  ))}
                 </div>
               ) : <div className="sbox"><b>Nothing here</b><div className="v">{i === 0 ? "Use Mark stage complete" : "Waiting on the step before"}</div></div>}
             </section>
@@ -305,7 +358,18 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             </section>
           </div>
         </div>
-        <ClientTree clients={d.clients} selected={d.client} onPick={setClient} />
+        <ClientTree
+          clients={d.clients}
+          selectedClient={d.client}
+          selectedProject={d.project}
+          selectedStudio={d.studio}
+          onPickClient={setClient}
+          onPickProject={setProject}
+          onPickStudio={setStudio}
+          role={role}
+          pending={pending}
+          onMarkStage={(s) => run(markStage(s))}
+        />
       </main>
 
       {/* ================= PLAN ================= */}
@@ -320,7 +384,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= TRACKER ================= */}
       {show("tracker") && <main className="screen hero" hidden={tab !== "tracker"}>
-        <TrackerTab studio={d.studio} client={d.client} active={tab === "tracker"} />
+        <TrackerTab studio={d.studio} client={d.client} project={d.project} active={tab === "tracker"} />
       </main>}
 
       {/* ================= AGENTS ================= */}
@@ -657,29 +721,175 @@ function Empty({ agent, tone, text }: { agent: string; tone: string; text: strin
   return <article className="acard"><div className="dmeta"><span className={`tag ${tone}`} style={tone ? undefined : { color: "var(--fg)" }}>{agent}</span><span>Clear</span></div><h3>Nothing to approve</h3><p>{text}</p></article>;
 }
 
-function ClientTree({ clients, selected, onPick }: { clients: ClientNode[]; selected: string | null; onPick: (c: string) => void }) {
+const STAGE_CAT_LABEL: Record<ClientStageNode["category"], { label: string; tone: string }> = {
+  advance: { label: "Advance", tone: "t-amber" },
+  design: { label: "Design", tone: "t-blue" },
+  construction: { label: "Construction", tone: "t-pink" },
+};
+
+function ClientTree({
+  clients, selectedClient, selectedProject, selectedStudio,
+  onPickClient, onPickProject, onPickStudio, role, pending, onMarkStage,
+}: {
+  clients: ClientNode[];
+  selectedClient: string | null;
+  selectedProject: string | null;
+  selectedStudio: string | null;
+  onPickClient: (c: string) => void;
+  onPickProject: (pn: string, clientName?: string) => void;
+  onPickStudio: (s: string) => void;
+  role: Role;
+  pending: boolean;
+  onMarkStage: (s: { project_number: string; studio: string | null; seq: number; event: "complete" | "client_approved" | "finance_notified" }) => void;
+}) {
+  const visibleClients = selectedClient
+    ? clients.filter((c) => c.client === selectedClient)
+    : selectedProject
+      ? clients.filter((c) => c.projects.some((p) => p.project_number === selectedProject))
+      : clients;
   return (
     <section className="card ctree">
-      <div className="ahead"><h2>Clients and projects</h2><small>{plural(clients.length, "client")} · active lines only · studio value never double counted</small></div>
-      {clients.length === 0 && <p className="note">No active projects.</p>}
-      {clients.map((c) => (
-        <details key={c.client} open={c.client === selected} className="cnode">
+      <div className="ahead">
+        <h2>Clients, projects, studios &amp; billing stages</h2>
+        <small>{plural(visibleClients.length, "client")} · expand Client → Project → Studio to inspect every stage and trigger billing</small>
+      </div>
+      {visibleClients.length === 0 && <p className="note">No active projects match this filter.</p>}
+      {visibleClients.map((c) => (
+        <details key={c.client} open={c.client === selectedClient || c.projects.some((p) => p.project_number === selectedProject)} className="cnode">
           <summary>
             <b>{c.client}</b>
-            <span className="cmeta">{plural(c.projects.length, "project")} · {plural(c.lines, "studio line")}</span>
+            <span className="cmeta">{plural(c.projects.length, "project")} · {plural(c.lines, "studio scope")}</span>
             <span className="num">{inr(c.contract)}</span>
             <span className="cmeta num">{c.contract ? Math.round((c.billed / c.contract) * 100) : 0}% billed · {inr(c.yetToBill)} to bill</span>
           </summary>
           <div className="cproj">
-            {c.client !== selected && <button className="pill" onClick={() => onPick(c.client)}>Filter dashboard to {c.client}</button>}
-            {c.client === selected && <button className="pill" onClick={() => onPick("")}>Clear client filter</button>}
-            {c.projects.map((p) => (
-              <div className="prow" key={p.project_number}>
-                <div className="pname"><b>{p.name ?? p.project_number}</b><span>{[p.location, p.type, p.project_number.trim()].filter(Boolean).join(" · ")}</span></div>
-                <div className="num pval">{inr(p.contract)}<small>{inr(p.yetToBill)} to bill</small></div>
-                <div className="pstud">{p.studios.map((s, i) => <span className="tag t-grey" key={i} title={s.stage ?? undefined}>{s.studio ?? "—"} · {inr(s.value)}</span>)}</div>
-              </div>
-            ))}
+            <div className="tree-acts">
+              {c.client !== selectedClient && <button className="pill" onClick={() => onPickClient(c.client)}>Filter dashboard to {c.client}</button>}
+              {c.client === selectedClient && <button className="pill" onClick={() => onPickClient("")}>Show all clients</button>}
+              {selectedProject && <button className="pill" onClick={() => onPickProject("")}>Show all {c.client} projects</button>}
+            </div>
+            {c.projects.map((p) => {
+              const isProjOpen = p.project_number === selectedProject || c.projects.length === 1;
+              return (
+                <details key={p.project_number} open={isProjOpen} className="pnode">
+                  <summary>
+                    <div className="pname">
+                      <b>{p.name ?? p.project_number}</b>
+                      <span>{[p.project_number.trim(), p.location, p.type, p.validity].filter(Boolean).join(" · ")}</span>
+                    </div>
+                    <span className="cmeta">{plural(p.studios.length, "studio")}</span>
+                    <div className="num pval">
+                      <b>{inr(p.contract)}</b>
+                      <small>{p.contract ? Math.round((p.billed / p.contract) * 100) : 0}% billed · {inr(p.yetToBill)} to bill</small>
+                    </div>
+                  </summary>
+                  <div className="sbox-tree">
+                    <div className="tree-acts">
+                      {p.project_number !== selectedProject
+                        ? <button className="pill" onClick={() => onPickProject(p.project_number, c.client)}>Filter dashboard to {p.project_number}</button>
+                        : <button className="pill" onClick={() => onPickProject("")}>Clear project filter</button>}
+                      {p.start_date && p.end_date && <span className="cmeta">Contract {niceDate(p.start_date)} → {niceDate(p.end_date)}</span>}
+                    </div>
+                    {p.studios.map((s, si) => {
+                      const billedStages = s.stages.filter((st) => st.billed_on || st.workflow_status === "billed" || st.workflow_status === "invoiced").length;
+                      const isStudioOpen = p.project_number === selectedProject || s.studio === selectedStudio || p.studios.length === 1;
+                      return (
+                        <details key={`${p.project_number}-${s.studio ?? "none"}-${si}`} open={isStudioOpen} className="snode">
+                          <summary>
+                            <div>
+                              <b>{s.studio ?? "Unassigned studio"}</b>
+                              <span className="cmeta">
+                                {s.splitPct != null ? `${Math.round(s.splitPct * 100)}% share` : "100%"} · {plural(s.stages.length, "stage")} ({billedStages} billed)
+                                {s.spoc ? ` · SPOC: ${s.spoc}` : ""}
+                              </span>
+                            </div>
+                            <div className="smeta">
+                              <span className="tag t-blue">Design {inr(s.designValue)}</span>
+                              <span className="tag t-pink">Construction {inr(s.constructionValue)}</span>
+                            </div>
+                            <div className="num pval">
+                              <b>{inr(s.value)}</b>
+                              <small>{s.billedPct != null ? `${Math.round(s.billedPct * 100)}%` : "0%"} billed · {inr(s.yetToBill)} to bill</small>
+                            </div>
+                          </summary>
+                          <div className="sbody">
+                            <div className="tree-acts">
+                              {s.studio && s.studio !== selectedStudio && (
+                                <button className="pill" onClick={() => onPickStudio(s.studio!)}>Filter studio: {s.studio}</button>
+                              )}
+                              {s.studio && s.studio === selectedStudio && role !== "project_manager" && (
+                                <button className="pill" onClick={() => onPickStudio("")}>Clear studio filter</button>
+                              )}
+                              {s.stage && <span className="cmeta">Current stage: {s.stage}</span>}
+                            </div>
+                            {s.stages.length === 0 ? (
+                              <p className="note">No contractual billing stages recorded for this studio line.</p>
+                            ) : (
+                              <div className="st-wrap">
+                                <table className="st-table">
+                                  <thead>
+                                    <tr>
+                                      <th>#</th>
+                                      <th>Billing stage</th>
+                                      <th>Bucket</th>
+                                      <th className="r">%</th>
+                                      <th className="r">Fee</th>
+                                      <th>Status</th>
+                                      <th className="r">Action</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {s.stages.map((st) => {
+                                      const cat = STAGE_CAT_LABEL[st.category];
+                                      const isBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+                                      return (
+                                        <tr key={st.id}>
+                                          <td className="num">{st.seq}</td>
+                                          <td>{st.stage ?? `Stage ${st.seq}`}</td>
+                                          <td><span className={`tag ${cat.tone}`}>{cat.label}</span></td>
+                                          <td className="r num">{st.pct != null ? `${(st.pct * 100).toFixed(st.pct * 100 % 1 ? 1 : 0)}%` : "—"}</td>
+                                          <td className="r num">{st.fee != null ? inr(st.fee) : "—"}</td>
+                                          <td>
+                                            {isBilled ? (
+                                              <span className="tag t-green">{st.billed_on ? `Billed ${niceDate(st.billed_on)}` : "Invoiced"}</span>
+                                            ) : st.workflow_status === "finance_notified" ? (
+                                              <span className="tag t-blue">In Finance queue</span>
+                                            ) : st.workflow_status === "client_approved" ? (
+                                              <span className="tag t-amber">Client approved</span>
+                                            ) : st.workflow_status === "complete" ? (
+                                              <span className="tag t-amber">Stage complete</span>
+                                            ) : (
+                                              <span className="tag t-grey">{st.workflow_status === "in_progress" ? "In progress" : "Pending"}</span>
+                                            )}
+                                          </td>
+                                          <td className="r">
+                                            {isBilled || st.workflow_status === "finance_notified" ? (
+                                              <span className="cmeta">{st.workflow_status === "finance_notified" ? "Awaiting invoice" : "Done"}</span>
+                                            ) : st.workflow_status === "client_approved" && can(role, "stage.notify_finance") ? (
+                                              <button className="pill solid" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "finance_notified" })}>Send to Finance</button>
+                                            ) : st.workflow_status === "complete" && can(role, "stage.approve") ? (
+                                              <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "client_approved" })}>Record approval</button>
+                                            ) : (st.workflow_status === "pending" || st.workflow_status === "in_progress") && can(role, "stage.complete") ? (
+                                              <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "complete" })}>Mark complete</button>
+                                            ) : (
+                                              <span className="cmeta">View only</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         </details>
       ))}

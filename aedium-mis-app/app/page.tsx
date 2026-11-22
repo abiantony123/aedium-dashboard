@@ -27,22 +27,23 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   // A project director only ever sees their own studio.
   const studio = user.role === "project_manager" && user.studio ? user.studio : (q.studio || null);
   const client = q.client || null;
+  const project = q.project || null;
   const month = /^\d{4}-\d{2}$/.test(q.month ?? "") ? q.month! : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()).slice(0, 7);
   try {
-    const data = await loadDashboard(sb, studio, client);
+    const data = await loadDashboard(sb, studio, client, project);
     const errors: string[] = [];
     const see = (t: Parameters<typeof canSee>[1]) => canSee(user.role, t);
     const [keys, runs, plan, esc, proj, queue, pos, notes, compliance, emailEvidence] = await Promise.all([
       see("connect") ? safe(listKeys(), [] as KeyInfo[], errors, "Connect AI") : [],
       see("connect") || see("agents") ? safe(recentRuns(40) as Promise<Run[]>, [] as Run[], errors, "Call log") : [],
-      see("plan") ? safe(fyPlan(sb, studio, client), null, errors, "Plan") : null,
-      see("plan") ? safe(escalations(sb, studio, client), [], errors, "Escalation") : [],
-      see("plan") ? safe(projection(sb, month, studio, client), null, errors, "Projection") : null,
+      see("plan") ? safe(fyPlan(sb, studio, client, project), null, errors, "Plan") : null,
+      see("plan") ? safe(escalations(sb, studio, client, project), [], errors, "Escalation") : [],
+      see("plan") ? safe(projection(sb, month, studio, client, project), null, errors, "Projection") : null,
       see("finance") ? safe(financeQueue(sb), [], errors, "Finance queue") : [],
       see("agents") ? safe(listPos(sb), [], errors, "PO intake") : [],
       safe(notificationsFor(sb, user.role), [], errors, "Notifications"),
-      see("agents") ? safe(checkCodeCompliance(sb, { studio, client, limit: 12 }), [] as ComplianceItem[], errors, "Code compliance") : [],
-      see("agents") ? safe(searchEmailEvidence(sb, { studio, limit: 12 }), [] as EmailCitation[], errors, "Email evidence") : [],
+      see("agents") ? safe(checkCodeCompliance(sb, { studio, client, project_number: project ?? undefined, limit: 12 }), [] as ComplianceItem[], errors, "Code compliance") : [],
+      see("agents") ? safe(searchEmailEvidence(sb, { studio, project_number: project ?? undefined, limit: 12 }), [] as EmailCitation[], errors, "Email evidence") : [],
     ]);
     const setupError = errors.length ? `Some sections need the latest SQL migrations (supabase/migrations): ${errors.join(" · ")}` : null;
     const fs = findings(data);

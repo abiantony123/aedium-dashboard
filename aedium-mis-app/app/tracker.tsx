@@ -16,7 +16,7 @@ const cell = (v: unknown, k: Col["kind"]) => {
 };
 
 // The master tracker as a familiar sheet: search, sort by any column, switch between its two sheets, export to Excel.
-export default function TrackerTab({ studio, client, active }: { studio: string | null; client: string | null; active: boolean }) {
+export default function TrackerTab({ studio, client, project, active }: { studio: string | null; client: string | null; project?: string | null; active: boolean }) {
   const [sheet, setSheet] = useState<Sheet>("summary");
   const [data, setData] = useState<{ columns: Col[]; rows: Row[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,11 +27,11 @@ export default function TrackerTab({ studio, client, active }: { studio: string 
   useEffect(() => {
     if (!active) return;   // loaded the first time the tab is opened, and again when the sheet or filters change
     let live = true;
-    const qs = new URLSearchParams({ sheet }); if (studio) qs.set("studio", studio); if (client) qs.set("client", client);
+    const qs = new URLSearchParams({ sheet }); if (studio) qs.set("studio", studio); if (client) qs.set("client", client); if (project) qs.set("project", project);
     setData(null); setError(null); setSort(null); setAll(false);
     fetch(`/api/tracker?${qs}`).then((r) => r.json()).then((j) => { if (!live) return; if (j.error) setError(j.error); else setData(j); }).catch(() => live && setError("Could not load the tracker."));
     return () => { live = false; };
-  }, [active, sheet, studio, client]);
+  }, [active, sheet, studio, client, project]);
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -49,12 +49,12 @@ export default function TrackerTab({ studio, client, active }: { studio: string 
     return r;
   }, [data, q, sort]);
 
-  const exQs = new URLSearchParams(); if (studio) exQs.set("studio", studio); if (client) exQs.set("client", client);
+  const exQs = new URLSearchParams(); if (studio) exQs.set("studio", studio); if (client) exQs.set("client", client); if (project) exQs.set("project", project);
   const exportUrl = `/api/export${exQs.size ? `?${exQs}` : ""}`;
   const shown = all ? rows : rows.slice(0, SHOWN);
   return (
     <>
-      <div className="eyebrow">Tracker · master workbook{studio ? ` · ${studio}` : ""}{client ? ` · ${client}` : ""}</div>
+      <div className="eyebrow">Tracker · master workbook{studio ? ` · ${studio}` : ""}{client ? ` · ${client}` : ""}{project ? ` · ${project}` : ""}</div>
       <div className="b-head">
         <h1>The tracker you know, <em>live.</em></h1>
         <div className="acts"><a className="pill" href={exportUrl}>Export .xlsx</a></div>

@@ -14,14 +14,15 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const studio = user.role === "project_manager" && user.studio ? user.studio : sp.get("studio");
   const client = sp.get("client");
+  const project = sp.get("project");
 
   const [lines, stages] = await Promise.all([
     all<Line & { origin: string; total_project_value: number | null; location: string | null; contract_validity: string | null; split_pct: number | null; yet_to_bill_pct: number | null }>(sb, "project_lines", "*"),
     all<Stage & { project_value: number | null; completion: string | null; assigned_to: string | null; remarks: string | null; origin: string }>(sb, "v_stages", "*"),
   ]);
-  const L = lines.filter((l) => (!studio || l.studio === studio) && (!client || l.client_name === client)).sort((a, b) => a.row_no - b.row_no);
-  const clientPns = client ? new Set(L.map((l) => l.project_number)) : null;
-  const S = stages.filter((s) => (!studio || s.studio === studio) && (!clientPns || clientPns.has(s.project_number))).sort((a, b) => a.project_number.localeCompare(b.project_number) || String(a.studio).localeCompare(String(b.studio)) || a.seq - b.seq);
+  const L = lines.filter((l) => (!studio || l.studio === studio) && (!client || l.client_name === client) && (!project || l.project_number === project)).sort((a, b) => a.row_no - b.row_no);
+  const clientPns = client || project ? new Set(L.map((l) => l.project_number)) : null;
+  const S = stages.filter((s) => (!studio || s.studio === studio) && (!clientPns || clientPns.has(s.project_number)) && (!project || s.project_number === project)).sort((a, b) => a.project_number.localeCompare(b.project_number) || String(a.studio).localeCompare(String(b.studio)) || a.seq - b.seq);
   const { data: pos } = await sb.from("purchase_orders").select("po_number,version,kind,status,client_name,project_number,project_name,total_value,start_date,end_date,escalation_clause,source,source_ref,extracted_by,reviewed_by,reviewed_at").order("id");
 
   const wb = new ExcelJS.Workbook();
@@ -44,7 +45,7 @@ export async function GET(req: Request) {
     (pos ?? []).map((p) => [p.po_number, p.version, p.kind, p.status, p.client_name, p.project_number, p.project_name, p.total_value, p.start_date, p.end_date, p.escalation_clause, p.source, p.source_ref, p.extracted_by, p.reviewed_by, p.reviewed_at]));
 
   const buf = await wb.xlsx.writeBuffer();
-  const parts = [studio, client].filter(Boolean).map((x) => x!.replace(/[^\w]+/g, "-"));
+  const parts = [studio, client, project].filter(Boolean).map((x) => x!.replace(/[^\w]+/g, "-"));
   const name = `aedium-master-tracker${parts.length ? "-" + parts.join("-") : ""}-${new Date().toISOString().slice(0, 10)}.xlsx`;
   return new Response(buf as ArrayBuffer, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="${name}"`, "cache-control": "no-store" } });
 }

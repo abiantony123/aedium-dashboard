@@ -32,11 +32,12 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const studio = user.role === "project_manager" && user.studio ? user.studio : sp.get("studio") || null;
   const client = sp.get("client") || null;
+  const project = sp.get("project") || null;
   const sheet = sp.get("sheet") === "stages" ? "stages" : "summary";
 
-  const lines = (await all<Record<string, unknown>>(sb, "project_lines", "*", "row_no")).filter((l) => (!studio || l.studio === studio) && (!client || l.client_name === client));
+  const lines = (await all<Record<string, unknown>>(sb, "project_lines", "*", "row_no")).filter((l) => (!studio || l.studio === studio) && (!client || l.client_name === client) && (!project || l.project_number === project));
   if (sheet === "summary") return NextResponse.json({ sheet, columns: SUMMARY, rows: lines });
   const pns = new Set(lines.map((l) => l.project_number as string));
-  const stages = (await all<Record<string, unknown>>(sb, "v_stages", "*", "row_no")).filter((s) => (!studio || s.studio === studio) && (!client || pns.has(s.project_number as string)));
+  const stages = (await all<Record<string, unknown>>(sb, "v_stages", "*", "row_no")).filter((s) => (!studio || s.studio === studio) && (!client || pns.has(s.project_number as string)) && (!project || s.project_number === project));
   return NextResponse.json({ sheet, columns: STAGES, rows: stages });
 }

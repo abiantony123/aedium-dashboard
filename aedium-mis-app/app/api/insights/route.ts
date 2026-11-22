@@ -12,7 +12,7 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
   const sp = new URL(req.url).searchParams;
   const studio = sp.get("studio") || null;
-  const d = await loadDashboard(sb, studio, sp.get("client") || null);
+  const d = await loadDashboard(sb, studio, sp.get("client") || null, sp.get("project") || null);
   const fs = findings(d);
   const out = await narrate(fs, studio).catch((e) => ({ narrative: null, source: "rules" as const, generated_at: null, note: String(e) }));
   return NextResponse.json({ findings: fs, ...out });
