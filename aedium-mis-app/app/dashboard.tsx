@@ -26,7 +26,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 type Draft = { to: string; subject: string; body: string };
 type Props = {
-  data: Dash & { studio: string | null; allStudios: string[]; client: string | null; project: string | null; clients: ClientNode[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
+  data: Dash & { studio: string | null; allStudios: string[]; client: string | null; project: string | null; stage: number | null; clients: ClientNode[] }; email: string; role: Role; roleStudio: string | null; tabs: TabName[];
   origin: string; keys: KeyInfo[]; runs: Run[]; setupError: string | null; findings: Finding[]; ruleText: NarrativeT;
   plan: Awaited<ReturnType<typeof fyPlan>> | null; escalations: Awaited<ReturnType<typeof escalations>>; projection: Awaited<ReturnType<typeof projection>> | null; month: string;
   financeQueue: Awaited<ReturnType<typeof financeQueue>>; pos: Awaited<ReturnType<typeof listPos>>;
@@ -46,16 +46,17 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   useEffect(() => {
     let live = true;
     setIns((x) => ({ ...x, loading: true }));
-    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client); if (d.project) qs.set("project", d.project);
+    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client); if (d.project) qs.set("project", d.project); if (d.stage) qs.set("stage", String(d.stage));
     fetch(`/api/insights${qs.size ? `?${qs}` : ""}`)
       .then((r) => r.json())
       .then((j) => { if (live) setIns({ narrative: j.narrative ?? ruleText, source: j.source ?? "rules", generated_at: j.generated_at ?? null, loading: false }); })
       .catch(() => { if (live) setIns({ narrative: ruleText, source: "rules", generated_at: null, loading: false }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey, d.studio, d.client, d.project]);
+  }, [findingsKey, d.studio, d.client, d.project, d.stage]);
   const text = ins.narrative;
   const [tab, setTab] = useState<Tab>("brief");
+  const [nameFilter, setNameFilter] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [span, setSpan] = useState<6 | 12>(6);
   const [studioMode, setStudioMode] = useState<"recorded" | "projected">("recorded");
@@ -117,50 +118,110 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const setStudio = (s: string) => {
     const u = new URL(location.href);
     if (s) u.searchParams.set("studio", s); else u.searchParams.delete("studio");
+    u.searchParams.delete("stage");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   const setClient = (c: string) => {
     const u = new URL(location.href);
     if (c) u.searchParams.set("client", c); else u.searchParams.delete("client");
-    if (d.project) {
-      const owns = c ? d.clients.find((x) => x.client === c)?.projects.some((p) => p.project_number === d.project) : false;
-      if (!owns) u.searchParams.delete("project");
-    }
+    u.searchParams.delete("project");
+    if (!(role === "project_manager" && roleStudio)) u.searchParams.delete("studio");
+    u.searchParams.delete("stage");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   const setProject = (pn: string, clientName?: string) => {
     const u = new URL(location.href);
     if (pn) {
       u.searchParams.set("project", pn);
-      const owner = clientName ?? d.clients.find((c) => c.projects.some((p) => p.project_number === pn))?.client;
+      const ownerNode = d.clients.find((c) => (clientName ? c.client === clientName : c.projects.some((p) => p.project_number === pn)));
+      const owner = clientName ?? ownerNode?.client;
       if (owner) u.searchParams.set("client", owner);
+      if (!(role === "project_manager" && roleStudio)) {
+        const projNode = ownerNode?.projects.find((p) => p.project_number === pn);
+        const curStudio = u.searchParams.get("studio");
+        if (curStudio && !projNode?.studios.some((s) => s.studio === curStudio)) u.searchParams.delete("studio");
+      }
     } else {
       u.searchParams.delete("project");
+    }
+    u.searchParams.delete("stage");
+    start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+  };
+  const setStage = (id: number | null, meta?: { client?: string; project?: string; studio?: string | null }) => {
+    const u = new URL(location.href);
+    if (id != null) {
+      u.searchParams.set("stage", String(id));
+      if (meta?.client) u.searchParams.set("client", meta.client);
+      if (meta?.project) u.searchParams.set("project", meta.project);
+      if (meta?.studio !== undefined && !(role === "project_manager" && roleStudio)) {
+        if (meta.studio) u.searchParams.set("studio", meta.studio);
+        else u.searchParams.delete("studio");
+      }
+    } else {
+      u.searchParams.delete("stage");
     }
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   const resetFilters = () => {
+    setNameFilter("");
     const u = new URL(location.href);
     u.searchParams.delete("client");
     u.searchParams.delete("project");
     if (!(role === "project_manager" && roleStudio)) u.searchParams.delete("studio");
+    u.searchParams.delete("stage");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
+  const clientOptions = useMemo(
+    () => [...d.clients].sort((a, b) => a.client.localeCompare(b.client, "en-IN", { sensitivity: "base" })),
+    [d.clients],
+  );
   const projectOptions = useMemo(() => {
     const src = d.client ? d.clients.filter((c) => c.client === d.client) : d.clients;
-    return src.flatMap((c) => c.projects.map((p) => ({
-      project_number: p.project_number,
-      client: c.client,
-      label: d.client ? `${p.name ?? p.project_number} (${p.project_number})` : `${c.client} · ${p.name ?? p.project_number} (${p.project_number})`,
-    }))).sort((a, b) => a.label.localeCompare(b.label));
+    return src.flatMap((c) => c.projects.map((p) => {
+      const pname = (p.name ?? p.project_number).trim();
+      return {
+        project_number: p.project_number,
+        client: c.client,
+        sortKey: pname,
+        label: d.client ? `${pname} (${p.project_number})` : `${pname} · ${c.client} (${p.project_number})`,
+      };
+    })).sort((a, b) => a.sortKey.localeCompare(b.sortKey, "en-IN", { sensitivity: "base" }));
   }, [d.clients, d.client]);
+  const studioOptions = useMemo(() => {
+    if (d.project) {
+      const proj = d.clients.flatMap((c) => c.projects).find((p) => p.project_number === d.project);
+      if (proj) return [...new Set(proj.studios.map((s) => s.studio).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
+    }
+    if (d.client) {
+      const c = d.clients.find((x) => x.client === d.client);
+      if (c) return [...new Set(c.projects.flatMap((p) => p.studios.map((s) => s.studio)).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
+    }
+    return [...d.allStudios].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
+  }, [d.clients, d.client, d.project, d.allStudios]);
+  const stageOptions = useMemo(() => {
+    const cNode = d.client ? d.clients.find((c) => c.client === d.client) : null;
+    const targetProjects = d.project
+      ? d.clients.flatMap((c) => c.projects.map((p) => ({ client: c.client, project: p }))).filter((x) => x.project.project_number === d.project)
+      : cNode && cNode.projects.length === 1
+        ? [{ client: cNode.client, project: cNode.projects[0] }]
+        : [];
+    return targetProjects.flatMap(({ project }) =>
+      [...project.studios]
+        .filter((s) => !d.studio || s.studio === d.studio)
+        .sort((a, b) => (a.studio ?? "").localeCompare(b.studio ?? "", "en-IN", { sensitivity: "base" }))
+        .flatMap((s) => s.stages.map((st) => ({
+          id: st.id,
+          label: `${d.studio ? "" : `${s.studio ?? "—"} · `}#${st.seq} ${shorten(st.stage, 42)} (${inr(st.fee)})`,
+        }))),
+    );
+  }, [d.clients, d.client, d.project, d.studio]);
   const clientPick = (
     <label className="pill studio-pick">
       <span className="sr">Client</span>
       <select aria-label="Client" value={d.client ?? ""} onChange={(e) => setClient(e.target.value)}>
         <option value="">All clients</option>
-        {d.clients.map((c) => <option key={c.client} value={c.client}>{c.client}</option>)}
-        {d.client && !d.clients.some((c) => c.client === d.client) && <option value={d.client}>{d.client}</option>}
+        {clientOptions.map((c) => <option key={c.client} value={c.client}>{c.client}</option>)}
+        {d.client && !clientOptions.some((c) => c.client === d.client) && <option value={d.client}>{d.client}</option>}
       </select>
     </label>
   );
@@ -179,7 +240,17 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       <span className="sr">Studio</span>
       <select aria-label="Studio" value={d.studio ?? ""} onChange={(e) => setStudio(e.target.value)}>
         <option value="">All studios</option>
-        {d.allStudios.map((s) => <option key={s} value={s}>{s}</option>)}
+        {studioOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+        {d.studio && !studioOptions.includes(d.studio) && <option value={d.studio}>{d.studio}</option>}
+      </select>
+    </label>
+  );
+  const stagePick = (
+    <label className="pill studio-pick">
+      <span className="sr">Milestone</span>
+      <select aria-label="Milestone" value={d.stage != null ? String(d.stage) : ""} onChange={(e) => setStage(e.target.value ? Number(e.target.value) : null)}>
+        <option value="">All milestones</option>
+        {stageOptions.map((st) => <option key={st.id} value={String(st.id)}>{st.label}</option>)}
       </select>
     </label>
   );
@@ -282,22 +353,32 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
 
       {/* ================= CASH ================= */}
       <main className="screen hero" hidden={tab !== "cash" || !show("cash")}>
-        <div className="eyebrow">Stage-to-cash · {month}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}</div>
+        <div className="eyebrow">Stage-to-cash · {month}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}{d.studio ? ` · ${d.studio}` : ""}{d.stage ? ` · Milestone #${d.stage}` : ""}</div>
         <div className="b-head">
           <h1>Every rupee, <em>from sign-off to bank.</em></h1>
           <div className="acts">
+            <input
+              className="pill name-filter"
+              type="search"
+              aria-label="Filter by name"
+              placeholder="Search client, project, studio, milestone…"
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+            />
             {clientPick}
             {projectPick}
             {studioPick}
-            {(d.client || d.project || (d.studio && !(role === "project_manager" && roleStudio))) && <button className="pill" onClick={resetFilters}>Reset filters</button>}
+            {stageOptions.length > 0 && stagePick}
+            {(d.client || d.project || d.stage || nameFilter || (d.studio && !(role === "project_manager" && roleStudio))) && <button className="pill" onClick={resetFilters}>Reset filters</button>}
             {can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}
           </div>
         </div>
         <div className="b-kpis num">
-          <div><label>Contract value</label><div className="kpill">{inr(k.contract)}</div></div>
+          <div><label>{d.stage ? "Milestone value" : d.studio ? "Studio value" : d.project ? "Project value" : "Contract value"}</label><div className="kpill">{inr(k.contract)}</div></div>
+          <div><label>Billed to date{k.contract ? ` · ${Math.round((k.billedTotal / k.contract) * 100)}%` : ""}</label><div className="kpill light">{inr(k.billedTotal)}</div></div>
+          <div><label>Yet to bill</label><div className="kpill">{inr(k.yetToBill)}</div></div>
           <div><label>Outstanding</label><div className="kpill pink">{inr(k.outstanding)}</div></div>
-          <div><label>Billed in {month.split(" ")[0]}</label><div className="kpill light">{inr(k.billedMonth)}</div></div>
-          <div><label>Collected</label><div className="kpill stripe">{inr(k.collectedMonth)}</div></div>
+          <div><label>Collected ({month.split(" ")[0]})</label><div className="kpill stripe">{inr(k.collectedMonth)}</div></div>
         </div>
         <div className="stages">
           {d.pipeline.map((p, i) => (
@@ -363,9 +444,12 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           selectedClient={d.client}
           selectedProject={d.project}
           selectedStudio={d.studio}
+          selectedStage={d.stage}
+          nameFilter={nameFilter}
           onPickClient={setClient}
           onPickProject={setProject}
           onPickStudio={setStudio}
+          onPickStage={setStage}
           role={role}
           pending={pending}
           onMarkStage={(s) => run(markStage(s))}
@@ -728,37 +812,73 @@ const STAGE_CAT_LABEL: Record<ClientStageNode["category"], { label: string; tone
 };
 
 function ClientTree({
-  clients, selectedClient, selectedProject, selectedStudio,
-  onPickClient, onPickProject, onPickStudio, role, pending, onMarkStage,
+  clients, selectedClient, selectedProject, selectedStudio, selectedStage, nameFilter,
+  onPickClient, onPickProject, onPickStudio, onPickStage, role, pending, onMarkStage,
 }: {
   clients: ClientNode[];
   selectedClient: string | null;
   selectedProject: string | null;
   selectedStudio: string | null;
+  selectedStage: number | null;
+  nameFilter: string;
   onPickClient: (c: string) => void;
   onPickProject: (pn: string, clientName?: string) => void;
   onPickStudio: (s: string) => void;
+  onPickStage: (id: number | null, meta?: { client?: string; project?: string; studio?: string | null }) => void;
   role: Role;
   pending: boolean;
   onMarkStage: (s: { project_number: string; studio: string | null; seq: number; event: "complete" | "client_approved" | "finance_notified" }) => void;
 }) {
-  const visibleClients = selectedClient
-    ? clients.filter((c) => c.client === selectedClient)
-    : selectedProject
-      ? clients.filter((c) => c.projects.some((p) => p.project_number === selectedProject))
-      : clients;
+  const q = nameFilter.trim().toLowerCase();
+  const matches = (s: string | null | undefined) => !!s && s.toLowerCase().includes(q);
+  const visibleClients = useMemo(() => {
+    const base = selectedClient
+      ? clients.filter((c) => c.client === selectedClient)
+      : selectedProject
+        ? clients.filter((c) => c.projects.some((p) => p.project_number === selectedProject))
+        : clients;
+    return base.map((c) => {
+      const clientHit = !q || matches(c.client);
+      const projects = c.projects
+        .filter((p) => !selectedProject || p.project_number === selectedProject)
+        .map((p) => {
+          const projHit = clientHit || [p.name, p.project_number, p.location, p.type].some(matches);
+          const studios = p.studios
+            .filter((s) => !selectedStudio || s.studio === selectedStudio)
+            .map((s) => {
+              const studHit = projHit || [s.studio, s.spoc, s.stage].some(matches);
+              const stages = s.stages
+                .filter((st) => !selectedStage || st.id === selectedStage)
+                .filter((st) => studHit || matches(st.stage));
+              if (!studHit && stages.length === 0) return null;
+              if (selectedStage != null && stages.length === 0) return null;
+              return { ...s, stages };
+            })
+            .filter((s): s is NonNullable<typeof s> => s !== null);
+          if (studios.length === 0) return null;
+          return { ...p, studios };
+        })
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+      if (projects.length === 0) return null;
+      return { ...c, projects };
+    }).filter((c): c is NonNullable<typeof c> => c !== null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clients, selectedClient, selectedProject, selectedStudio, selectedStage, q]);
+
   return (
     <section className="card ctree">
       <div className="ahead">
         <h2>Clients, projects, studios &amp; billing stages</h2>
-        <small>{plural(visibleClients.length, "client")} · expand Client → Project → Studio to inspect every stage and trigger billing</small>
+        <small>{plural(visibleClients.length, "client")} (A–Z) · expand Client → Project → Studio to inspect every milestone and trigger billing</small>
       </div>
-      {visibleClients.length === 0 && <p className="note">No active projects match this filter.</p>}
-      {visibleClients.map((c) => (
-        <details key={c.client} open={c.client === selectedClient || c.projects.some((p) => p.project_number === selectedProject)} className="cnode">
+      {visibleClients.length === 0 && <p className="note">No active projects or milestones match this filter.</p>}
+      {visibleClients.map((c) => {
+        const isClientOpen = Boolean(q) || c.client === selectedClient || c.projects.some((p) => p.project_number === selectedProject);
+        return (
+        <details key={c.client} open={isClientOpen} className="cnode">
           <summary>
             <b>{c.client}</b>
-            <span className="cmeta">{plural(c.projects.length, "project")} · {plural(c.lines, "studio scope")}</span>
+            <span className="cmeta">{plural(c.projects.length, "project")} · {plural(c.projects.reduce((a, p) => a + p.studios.length, 0), "studio scope")}</span>
             <span className="num">{inr(c.contract)}</span>
             <span className="cmeta num">{c.contract ? Math.round((c.billed / c.contract) * 100) : 0}% billed · {inr(c.yetToBill)} to bill</span>
           </summary>
@@ -769,7 +889,7 @@ function ClientTree({
               {selectedProject && <button className="pill" onClick={() => onPickProject("")}>Show all {c.client} projects</button>}
             </div>
             {c.projects.map((p) => {
-              const isProjOpen = p.project_number === selectedProject || c.projects.length === 1;
+              const isProjOpen = Boolean(q) || p.project_number === selectedProject || c.projects.length === 1;
               return (
                 <details key={p.project_number} open={isProjOpen} className="pnode">
                   <summary>
@@ -792,14 +912,14 @@ function ClientTree({
                     </div>
                     {p.studios.map((s, si) => {
                       const billedStages = s.stages.filter((st) => st.billed_on || st.workflow_status === "billed" || st.workflow_status === "invoiced").length;
-                      const isStudioOpen = p.project_number === selectedProject || s.studio === selectedStudio || p.studios.length === 1;
+                      const isStudioOpen = Boolean(q) || selectedStage != null || p.project_number === selectedProject || s.studio === selectedStudio || p.studios.length === 1;
                       return (
                         <details key={`${p.project_number}-${s.studio ?? "none"}-${si}`} open={isStudioOpen} className="snode">
                           <summary>
                             <div>
                               <b>{s.studio ?? "Unassigned studio"}</b>
                               <span className="cmeta">
-                                {s.splitPct != null ? `${Math.round(s.splitPct * 100)}% share` : "100%"} · {plural(s.stages.length, "stage")} ({billedStages} billed)
+                                {s.splitPct != null ? `${Math.round(s.splitPct * 100)}% share` : "100%"} · {plural(s.stages.length, "milestone")} ({billedStages} billed)
                                 {s.spoc ? ` · SPOC: ${s.spoc}` : ""}
                               </span>
                             </div>
@@ -820,17 +940,20 @@ function ClientTree({
                               {s.studio && s.studio === selectedStudio && role !== "project_manager" && (
                                 <button className="pill" onClick={() => onPickStudio("")}>Clear studio filter</button>
                               )}
+                              {selectedStage != null && (
+                                <button className="pill" onClick={() => onPickStage(null)}>Show all milestones</button>
+                              )}
                               {s.stage && <span className="cmeta">Current stage: {s.stage}</span>}
                             </div>
                             {s.stages.length === 0 ? (
-                              <p className="note">No contractual billing stages recorded for this studio line.</p>
+                              <p className="note">No contractual billing milestones recorded for this studio line.</p>
                             ) : (
                               <div className="st-wrap">
                                 <table className="st-table">
                                   <thead>
                                     <tr>
                                       <th>#</th>
-                                      <th>Billing stage</th>
+                                      <th>Milestone / billing stage</th>
                                       <th>Bucket</th>
                                       <th className="r">%</th>
                                       <th className="r">Fee</th>
@@ -842,6 +965,7 @@ function ClientTree({
                                     {s.stages.map((st) => {
                                       const cat = STAGE_CAT_LABEL[st.category];
                                       const isBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+                                      const isFocused = selectedStage === st.id;
                                       return (
                                         <tr key={st.id}>
                                           <td className="num">{st.seq}</td>
@@ -863,17 +987,25 @@ function ClientTree({
                                             )}
                                           </td>
                                           <td className="r">
-                                            {isBilled || st.workflow_status === "finance_notified" ? (
-                                              <span className="cmeta">{st.workflow_status === "finance_notified" ? "Awaiting invoice" : "Done"}</span>
-                                            ) : st.workflow_status === "client_approved" && can(role, "stage.notify_finance") ? (
-                                              <button className="pill solid" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "finance_notified" })}>Send to Finance</button>
-                                            ) : st.workflow_status === "complete" && can(role, "stage.approve") ? (
-                                              <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "client_approved" })}>Record approval</button>
-                                            ) : (st.workflow_status === "pending" || st.workflow_status === "in_progress") && can(role, "stage.complete") ? (
-                                              <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "complete" })}>Mark complete</button>
-                                            ) : (
-                                              <span className="cmeta">View only</span>
-                                            )}
+                                            <div className="st-actions">
+                                              <button
+                                                className={`pill${isFocused ? " solid" : ""}`}
+                                                onClick={() => isFocused ? onPickStage(null) : onPickStage(st.id, { client: c.client, project: p.project_number, studio: s.studio })}
+                                              >
+                                                {isFocused ? "All milestones" : "Focus"}
+                                              </button>
+                                              {isBilled || st.workflow_status === "finance_notified" ? (
+                                                <span className="cmeta">{st.workflow_status === "finance_notified" ? "Awaiting invoice" : "Done"}</span>
+                                              ) : st.workflow_status === "client_approved" && can(role, "stage.notify_finance") ? (
+                                                <button className="pill solid" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "finance_notified" })}>Send to Finance</button>
+                                              ) : st.workflow_status === "complete" && can(role, "stage.approve") ? (
+                                                <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "client_approved" })}>Record approval</button>
+                                              ) : (st.workflow_status === "pending" || st.workflow_status === "in_progress") && can(role, "stage.complete") ? (
+                                                <button className="pill" disabled={pending} onClick={() => onMarkStage({ project_number: p.project_number, studio: s.studio, seq: st.seq, event: "complete" })}>Mark complete</button>
+                                              ) : (
+                                                <span className="cmeta">View only</span>
+                                              )}
+                                            </div>
                                           </td>
                                         </tr>
                                       );
@@ -892,7 +1024,8 @@ function ClientTree({
             })}
           </div>
         </details>
-      ))}
+        );
+      })}
     </section>
   );
 }

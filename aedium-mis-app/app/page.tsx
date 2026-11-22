@@ -28,9 +28,10 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   const studio = user.role === "project_manager" && user.studio ? user.studio : (q.studio || null);
   const client = q.client || null;
   const project = q.project || null;
+  const stage = q.stage && /^\d+$/.test(q.stage) ? Number(q.stage) : null;
   const month = /^\d{4}-\d{2}$/.test(q.month ?? "") ? q.month! : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()).slice(0, 7);
   try {
-    const data = await loadDashboard(sb, studio, client, project);
+    const data = await loadDashboard(sb, studio, client, project, stage);
     const errors: string[] = [];
     const see = (t: Parameters<typeof canSee>[1]) => canSee(user.role, t);
     const [keys, runs, plan, esc, proj, queue, pos, notes, compliance, emailEvidence] = await Promise.all([
@@ -56,7 +57,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       data.agents = { collection: null, contractWatch: null, invoiceTrigger: null, notifiedCount: 0, oldestNotifiedDays: 0 };
     }
     if (!see("brief")) {
-      data.kpi = { contract: 0, yetToBill: 0, designYtb: 0, billedMonth: 0, billedPrevMonth: 0, collectedMonth: 0, outstanding: 0, late: 0, openCount: 0, activeLines: data.kpi.activeLines };
+      data.kpi = { contract: 0, billedTotal: 0, yetToBill: 0, designYtb: 0, billedMonth: 0, billedPrevMonth: 0, collectedMonth: 0, outstanding: 0, late: 0, openCount: 0, activeLines: data.kpi.activeLines };
     }
     return (
       <Dashboard data={data} email={user.email} role={user.role} roleStudio={user.studio} tabs={tabsFor(user.role)} origin={origin}

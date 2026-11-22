@@ -49,7 +49,7 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
   }
 }
 
-export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null, project?: string | null) {
+export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null, project?: string | null, stageId?: number | null) {
   const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan, cplanFallback] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
@@ -95,12 +95,14 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
     decisions: (decisions.data ?? []) as Decision[], events: (events.data ?? []) as Event[],
     runs: (runs.data ?? []) as ImportRun[], staffCount: staff.count ?? 0, cplan: [...cplanMerged.values()],
   };
-  const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort();
-  const inStudio = studio ? filterStudio(raw, studio) : raw;
-  const clients = clientTree(inStudio.lines, inStudio.stages);   // client list and tree follow the studio filter, not the client/project filter
-  const byClient = client ? filterClient(inStudio, client) : inStudio;
-  const scoped = project ? filterProject(byClient, project) : byClient;
-  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, project: project ?? null, clients };
+  const allStudios = [...new Set(lines.map((l) => l.studio).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
+  const clients = clientTree(raw.lines, raw.stages);   // full alphabetical catalog so cascading dropdowns always see all project studios
+  let scoped = raw;
+  if (client) scoped = filterClient(scoped, client);
+  if (project) scoped = filterProject(scoped, project);
+  if (studio) scoped = filterStudio(scoped, studio);
+  if (stageId) scoped = filterStage(scoped, stageId);
+  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, project: project ?? null, stage: stageId ?? null, clients };
 }
 
 // One client's slice. Zoho rows follow the project number on their sales order, invoice reference, or customer name.
@@ -134,6 +136,45 @@ function filterProject(r: Raw, project: string): Raw {
   };
 }
 
+// One milestone/stage's isolated financial slice across KPIs, pipeline cards, and Zoho rows.
+function filterStage(r: Raw, stageId: number): Raw {
+  const st = r.stages.find((s) => s.id === stageId);
+  if (!st) return { ...r, lines: [], stages: [], open: [], invoices: [], payments: [], sos: [] };
+  const fee = Number(st.fee) || 0;
+  const isBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
+  const cat = stageCategory(st.stage);
+  const baseLine =
+    r.lines.find((l) => l.project_number === st.project_number && l.studio === st.studio) ??
+    r.lines.find((l) => l.project_number === st.project_number);
+  const lines: Line[] = baseLine ? [{
+    ...baseLine,
+    split_value: fee,
+    billed_amount: isBilled ? fee : 0,
+    yet_to_bill_amount: isBilled ? 0 : fee,
+    billed_pct: isBilled ? 1 : 0,
+    design_value: !isBilled && cat === "design" ? fee : 0,
+    construction_value: !isBilled && cat === "construction" ? fee : 0,
+    project_stage: st.stage,
+  }] : [];
+  const invMatch = (i: { line_items?: { project_number?: string; stage_seq?: number }[] }) => {
+    const li = i.line_items?.[0];
+    if (li?.stage_seq != null) return li.stage_seq === st.seq && (!li.project_number || li.project_number === st.project_number);
+    return false;
+  };
+  const open = isBilled ? r.open.filter((i) => (!st.project_number || i.project_number === st.project_number) && invMatch(i)) : [];
+  const invoices = isBilled ? r.invoices.filter((i) => invMatch(i)) : [];
+  const invIds = new Set(invoices.map((i) => i.invoice_id));
+  return {
+    ...r,
+    lines,
+    stages: [st],
+    open,
+    invoices,
+    sos: [],
+    payments: isBilled ? r.payments.filter((p) => p.invoices?.some((x) => invIds.has(x.invoice_id))) : [],
+  };
+}
+
 // Client -> project -> studio lines -> billing stages, active lines only. Value is the sum of each studio's own split
 // (never the repeated project total), so a combined PO is not counted once per studio.
 export type ClientStageNode = {
@@ -160,6 +201,7 @@ const stageCategory = (name: string | null): "advance" | "design" | "constructio
   if (/advance|appointment|mobilis|upon signing|confirmation of order/i.test(name ?? "")) return "advance";
   return "design";
 };
+const cmpAlpha = (a: string, b: string) => a.localeCompare(b, "en-IN", { sensitivity: "base" });
 export function clientTree(lines: Line[], stages: Stage[] = []): ClientNode[] {
   const byClient = new Map<string, Map<string, Line[]>>();
   for (const l of lines.filter(isActive)) {
@@ -193,11 +235,11 @@ export function clientTree(lines: Line[], stages: Stage[] = []): ClientNode[] {
             designValue: n(l.design_value), constructionValue: n(l.construction_value),
             stage: l.project_stage, spoc: l.spoc, status: l.status, stages: sts,
           };
-        }),
+        }).sort((a, b) => cmpAlpha(a.studio ?? "", b.studio ?? "")),
       };
-    }).sort((a, b) => b.contract - a.contract);
+    }).sort((a, b) => cmpAlpha((a.name ?? a.project_number).trim(), (b.name ?? b.project_number).trim()));
     return { client, contract: ps.reduce((a, p) => a + p.contract, 0), billed: ps.reduce((a, p) => a + p.billed, 0), yetToBill: ps.reduce((a, p) => a + p.yetToBill, 0), lines: ps.reduce((a, p) => a + p.studios.length, 0), projects: ps };
-  }).sort((a, b) => b.contract - a.contract);
+  }).sort((a, b) => cmpAlpha(a.client, b.client));
 }
 
 // One studio's slice: tracker rows by studio, Zoho rows through their sales order's studio or invoice line prefix.
@@ -231,6 +273,7 @@ export function build(r: Raw) {
   const active = r.lines.filter(isActive);
   const sum = <T,>(xs: T[], f: (x: T) => number | null | undefined) => xs.reduce((a, x) => a + (Number(f(x)) || 0), 0);
   const contract = sum(active, (l) => l.split_value);
+  const billedTotal = sum(active, (l) => l.billed_amount);
   const yetToBill = sum(active, (l) => l.yet_to_bill_amount);
   const designYtb = sum(active, (l) => l.design_value);
   const billedMonth = sum(r.stages.filter((s) => s.billed_on?.startsWith(reportMonth)), (s) => s.fee);
@@ -356,7 +399,7 @@ export function build(r: Raw) {
   return {
     today, reportMonth, lastRun, staffCount: r.staffCount, zohoIsSample: sourceIsMock,
     prevMonth,
-    kpi: { contract, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: r.open.length, activeLines: active.length },
+    kpi: { contract, billedTotal, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: r.open.length, activeLines: active.length },
     open: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, queues,
     agents: {
       collection, contractWatch,
