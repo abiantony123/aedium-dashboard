@@ -208,11 +208,16 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       : cNode && cNode.projects.length === 1
         ? [{ client: cNode.client, project: cNode.projects[0] }]
         : [];
+    const seen = new Set<number>();
     return targetProjects.flatMap(({ project }) =>
       [...project.studios]
         .filter((s) => !d.studio || s.studio === d.studio)
         .sort((a, b) => (a.studio ?? "").localeCompare(b.studio ?? "", "en-IN", { sensitivity: "base" }))
-        .flatMap((s) => s.stages.map((st) => ({
+        .flatMap((s) => s.stages.filter((st) => {
+          if (seen.has(st.id)) return false;
+          seen.add(st.id);
+          return true;
+        }).map((st) => ({
           id: st.id,
           label: `${d.studio ? "" : `${s.studio ?? "—"} · `}#${st.seq} ${shorten(st.stage, 42)} (${inr(st.fee)})`,
         }))),
@@ -428,7 +433,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             contract += partVal; billedTotal += partBilled; yetToBill += partYet;
             tlCandidates.push({
               key: `${p.project_number}-${s.studio ?? ""}-${si}`,
-              client: c.client, project_number: p.project_number, project_name: p.name, studio: s.studio,
+              client: c.client, project_number: p.project_number, project_name: s.line_name ?? p.name, studio: s.studio,
               start_date: p.start_date, end_date: p.end_date, validity: p.validity,
               stageLabel: s.stages.map((st) => st.stage).filter(Boolean).join(", ") || "Milestone",
               val: partVal, billed: partBilled, yetToBill: partYet, pct: partVal ? partBilled / partVal : 0, stages: s.stages,
@@ -437,7 +442,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             contract += s.value; billedTotal += s.billed; yetToBill += s.yetToBill;
             tlCandidates.push({
               key: `${p.project_number}-${s.studio ?? ""}-${si}`,
-              client: c.client, project_number: p.project_number, project_name: p.name, studio: s.studio,
+              client: c.client, project_number: p.project_number, project_name: s.line_name ?? p.name, studio: s.studio,
               start_date: p.start_date, end_date: p.end_date, validity: p.validity,
               stageLabel: s.stage ?? s.status ?? "No stage recorded",
               val: s.value, billed: s.billed, yetToBill: s.yetToBill, pct: s.billedPct ?? (s.value ? s.billed / s.value : 0), stages: s.stages,
@@ -1273,6 +1278,7 @@ function ClientTree({
                               <b>{s.studio ?? "Unassigned studio"}</b>
                               <span className="cmeta">
                                 {s.splitPct != null ? `${Math.round(s.splitPct * 100)}% share` : "100%"} · {plural(s.stages.length, "milestone")} ({billedStages} billed)
+                                {s.line_name && s.line_name !== p.name ? ` · ${s.line_name}` : s.sl_no && p.studios.filter((x) => x.studio === s.studio).length > 1 ? ` · #${s.sl_no}` : ""}
                                 {s.spoc ? ` · SPOC: ${s.spoc}` : ""}
                               </span>
                               {s.stages.length > 0 && (

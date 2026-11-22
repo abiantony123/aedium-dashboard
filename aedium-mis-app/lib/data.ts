@@ -144,6 +144,7 @@ function filterStage(r: Raw, stageId: number): Raw {
   const isBilled = Boolean(st.billed_on) || st.workflow_status === "billed" || st.workflow_status === "invoiced";
   const cat = stageCategory(st.stage);
   const baseLine =
+    (st.sl_no ? r.lines.find((l) => l.project_number === st.project_number && l.sl_no === st.sl_no) : undefined) ??
     r.lines.find((l) => l.project_number === st.project_number && l.studio === st.studio) ??
     r.lines.find((l) => l.project_number === st.project_number);
   const lines: Line[] = baseLine ? [{
@@ -183,6 +184,7 @@ export type ClientStageNode = {
   category: "advance" | "design" | "construction";
 };
 export type ClientStudioNode = {
+  sl_no: string | null; line_name: string | null;
   studio: string | null; value: number; splitPct: number | null; billed: number; billedPct: number | null; yetToBill: number;
   designValue: number; constructionValue: number; stage: string | null; spoc: string | null; status: string | null;
   stages: ClientStageNode[];
@@ -204,38 +206,63 @@ const stageCategory = (name: string | null): "advance" | "design" | "constructio
 const cmpAlpha = (a: string, b: string) => a.localeCompare(b, "en-IN", { sensitivity: "base" });
 export function clientTree(lines: Line[], stages: Stage[] = []): ClientNode[] {
   const byClient = new Map<string, Map<string, Line[]>>();
+  const allSlsByPn = new Map<string, Set<string>>();
+  for (const l of lines) {
+    if (!l.sl_no) continue;
+    const set = allSlsByPn.get(l.project_number) ?? new Set<string>();
+    set.add(l.sl_no);
+    allSlsByPn.set(l.project_number, set);
+  }
   for (const l of lines.filter(isActive)) {
     const c = l.client_name?.trim() || "Unassigned";
     const projects = byClient.get(c) ?? new Map<string, Line[]>(); byClient.set(c, projects);
     projects.set(l.project_number, [...(projects.get(l.project_number) ?? []), l]);
   }
-  const stagesByKey = new Map<string, Stage[]>();
-  for (const s of stages) {
-    const k = `${s.project_number}|${s.studio ?? ""}`;
-    stagesByKey.set(k, [...(stagesByKey.get(k) ?? []), s]);
-  }
-  for (const xs of stagesByKey.values()) xs.sort((a, b) => a.seq - b.seq);
+  const stagesByPn = new Map<string, Stage[]>();
+  for (const s of stages) stagesByPn.set(s.project_number, [...(stagesByPn.get(s.project_number) ?? []), s]);
+  for (const xs of stagesByPn.values()) xs.sort((a, b) => a.seq - b.seq);
+  const toStageNode = (s: Stage): ClientStageNode => ({
+    id: s.id, seq: s.seq, stage: s.stage, pct: s.pct, fee: s.fee, billed_on: s.billed_on,
+    workflow_status: s.workflow_status, last_event_at: s.last_event_at, category: stageCategory(s.stage),
+  });
   const n = (v: number | null | undefined) => Number(v) || 0;
   return [...byClient.entries()].map(([client, projects]) => {
     const ps: ClientProjectNode[] = [...projects.entries()].map(([project_number, ls]) => {
       const contract = ls.reduce((a, l) => a + n(l.split_value), 0);
+      const pStages = stagesByPn.get(project_number) ?? [];
+      const claimed = new Set<number>();
+      const slCounts = new Map<string, number>();
+      for (const l of ls) if (l.sl_no) slCounts.set(l.sl_no, (slCounts.get(l.sl_no) ?? 0) + 1);
+      // Match each active line to its own billing stages by sl_no first so same-studio lines never duplicate stages.
+      const stagesByLine = new Map<number, Stage[]>();
+      for (const l of ls) {
+        if (!l.sl_no) continue;
+        const multiSl = (slCounts.get(l.sl_no) ?? 0) > 1;
+        const matches = pStages.filter((s) => !claimed.has(s.id) && s.sl_no === l.sl_no && (!multiSl || (s.studio ?? "") === (l.studio ?? "")));
+        for (const s of matches) claimed.add(s.id);
+        stagesByLine.set(l.id, matches);
+      }
+      const knownProjectSls = allSlsByPn.get(project_number) ?? new Set<string>();
+      for (const l of ls) {
+        if ((stagesByLine.get(l.id)?.length ?? 0) > 0) continue;
+        const fallback = pStages.filter((s) => !claimed.has(s.id) && (s.studio ?? "") === (l.studio ?? "") && (!s.sl_no || !knownProjectSls.has(s.sl_no)));
+        for (const s of fallback) claimed.add(s.id);
+        stagesByLine.set(l.id, fallback);
+      }
       return {
         project_number, name: ls[0].project_name, location: ls[0].location, type: ls[0].project_type,
         validity: ls[0].contract_validity, start_date: ls[0].start_date, end_date: ls[0].end_date,
         contract, billed: ls.reduce((a, l) => a + n(l.billed_amount), 0), yetToBill: ls.reduce((a, l) => a + n(l.yet_to_bill_amount), 0),
         studios: ls.map((l) => {
           const val = n(l.split_value);
-          const sts = (stagesByKey.get(`${project_number}|${l.studio ?? ""}`) ?? []).map((s) => ({
-            id: s.id, seq: s.seq, stage: s.stage, pct: s.pct, fee: s.fee, billed_on: s.billed_on,
-            workflow_status: s.workflow_status, last_event_at: s.last_event_at, category: stageCategory(s.stage),
-          }));
           return {
+            sl_no: l.sl_no, line_name: l.project_name,
             studio: l.studio, value: val, splitPct: contract > 0 ? val / contract : null,
             billed: n(l.billed_amount), billedPct: l.billed_pct, yetToBill: n(l.yet_to_bill_amount),
             designValue: n(l.design_value), constructionValue: n(l.construction_value),
-            stage: l.project_stage, spoc: l.spoc, status: l.status, stages: sts,
+            stage: l.project_stage, spoc: l.spoc, status: l.status, stages: (stagesByLine.get(l.id) ?? []).map(toStageNode),
           };
-        }).sort((a, b) => cmpAlpha(a.studio ?? "", b.studio ?? "")),
+        }).sort((a, b) => cmpAlpha(a.studio ?? "", b.studio ?? "") || cmpAlpha(a.line_name ?? "", b.line_name ?? "") || cmpAlpha(a.sl_no ?? "", b.sl_no ?? "")),
       };
     }).sort((a, b) => cmpAlpha((a.name ?? a.project_number).trim(), (b.name ?? b.project_number).trim()));
     return { client, contract: ps.reduce((a, p) => a + p.contract, 0), billed: ps.reduce((a, p) => a + p.billed, 0), yetToBill: ps.reduce((a, p) => a + p.yetToBill, 0), lines: ps.reduce((a, p) => a + p.studios.length, 0), projects: ps };
