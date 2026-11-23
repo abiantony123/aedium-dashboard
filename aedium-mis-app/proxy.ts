@@ -18,7 +18,9 @@ export async function proxy(request: NextRequest) {
 
   // Demo mode: no accounts. The /login page has one "Enter demo" button that sets a cookie
   // (plus an optional shared passcode when DEMO_PASSCODE is set).
-  if (process.env.DEMO_MODE === "1") {
+  // Same rule as demoMode() in lib/supabase/server.ts (kept inline: the proxy can't import next/headers code).
+  const demo = /^(1|true|yes|on)$/i.test((process.env.DEMO_MODE ?? "").trim().replace(/^["']|["']$/g, "")) || !!process.env.DEMO_PASSCODE?.trim();
+  if (demo) {
     if (path.startsWith("/login")) return NextResponse.next();
     const ok = request.cookies.get("aedium_demo")?.value === (await passHash(process.env.DEMO_PASSCODE || "open"));
     return ok ? NextResponse.next() : toLogin();

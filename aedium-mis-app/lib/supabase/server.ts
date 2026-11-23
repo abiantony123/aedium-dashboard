@@ -7,7 +7,8 @@ export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 export const SUPABASE_KEY = (process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)!;
 
 // DEMO_MODE=1: no sign-in. Data is read on the server with the service-role key, which never reaches the browser.
-export const demoMode = () => process.env.DEMO_MODE === "1";
+// A set DEMO_PASSCODE also turns demo mode on, so a hosted copy is never left on email sign-in by a mistyped DEMO_MODE.
+export const demoMode = () => /^(1|true|yes|on)$/i.test((process.env.DEMO_MODE ?? "").trim().replace(/^["']|["']$/g, "")) || !!process.env.DEMO_PASSCODE?.trim();
 
 // Server client acting as the signed-in user, so row-level security applies to every query.
 export async function supabaseServer() {
