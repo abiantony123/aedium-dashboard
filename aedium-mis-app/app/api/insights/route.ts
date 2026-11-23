@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { dataClient } from "@/lib/supabase/server";
 import { loadDashboard } from "@/lib/data";
+import { parseRange } from "@/lib/period";
 import { findings, narrate } from "@/lib/agents/insights";
 
 export const maxDuration = 60;
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
   const studio = sp.get("studio") || null;
   const stageRaw = sp.get("stage");
   const stage = stageRaw && /^\d+$/.test(stageRaw) ? Number(stageRaw) : null;
-  const d = await loadDashboard(sb, studio, sp.get("client") || null, sp.get("project") || null, stage);
+  const d = await loadDashboard(sb, studio, sp.get("client") || null, sp.get("project") || null, stage, parseRange(sp.get("from"), sp.get("to")));
   const fs = findings(d);
   const out = await narrate(fs, studio).catch((e) => ({ narrative: null, source: "rules" as const, generated_at: null, note: String(e) }));
   return NextResponse.json({ findings: fs, ...out });

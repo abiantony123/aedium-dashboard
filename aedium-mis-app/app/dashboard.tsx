@@ -16,9 +16,14 @@ import type { financeQueue } from "@/lib/finance";
 import type { listPos } from "@/lib/po";
 import PlanTab from "./plan";
 import FinanceTab from "./finance";
-import MailTab from "./mail";
-import TrackerTab from "./tracker";
-import PoIntake from "./po";
+import PoInbox, { PoActivity } from "./poinbox";
+import ForecastView from "./forecastview";
+import LeakageView from "./leakageview";
+import DateRange from "./daterange";
+import type { Range } from "@/lib/period";
+import type { inbox as inboxFn } from "@/lib/inbox";
+import type { Forecast as ForecastT } from "@/lib/forecast";
+import type { Leakage } from "@/lib/leakage";
 import Bell from "./bell";
 
 type Tab = TabName;
@@ -32,10 +37,17 @@ type Props = {
   financeQueue: Awaited<ReturnType<typeof financeQueue>>; pos: Awaited<ReturnType<typeof listPos>>;
   notifications: { id: number; title: string; body: string | null; tab: string | null; created_at: string; read_at: string | null }[];
   compliance: ComplianceItem[]; emailEvidence: EmailCitation[];
+  inbox: Awaited<ReturnType<typeof inboxFn>> | null; forecast: Omit<ForecastT, "items"> | null; backtest: { month: string; forecast: number; actual: number | null }[]; leakage: Leakage | null;
+};
+// Sub-pages per tab (hash #tab/sub); the first is the default.
+const SUBS: Partial<Record<Tab, [string, string][]>> = {
+  cash: [["pipeline", "Pipeline"], ["leakage", "Leakage"]],
+  plan: [["outlook", "Outlook"], ["forecast", "Forecast"], ["projection", "Monthly projection"]],
+  agents: [["approvals", "Approvals"], ["po-intake", "PO intake"], ["activity", "Activity"]],
 };
 type Ins = { narrative: NarrativeT; source: "llm" | "rules"; generated_at: string | null; loading: boolean };
 
-export default function Dashboard({ data: d, email, role, roleStudio, tabs, origin, keys, runs, setupError, findings, ruleText, plan, escalations: esc, projection: proj, month: projMonth, financeQueue: fq, pos, notifications, compliance, emailEvidence }: Props) {
+export default function Dashboard({ data: d, email, role, roleStudio, tabs, origin, keys, runs, setupError, findings, ruleText, plan, escalations: esc, projection: proj, month: projMonth, financeQueue: fq, pos, notifications, compliance, emailEvidence, inbox: box, forecast: fc, backtest: bt, leakage: leak }: Props) {
   const TABS = tabs;
   const NAV = tabs.filter((t) => t !== "connect");
   const show = (t: Tab) => TABS.includes(t);
@@ -46,20 +58,21 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   useEffect(() => {
     let live = true;
     setIns((x) => ({ ...x, loading: true }));
-    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client); if (d.project) qs.set("project", d.project); if (d.stage) qs.set("stage", String(d.stage));
+    const qs = new URLSearchParams(); if (d.studio) qs.set("studio", d.studio); if (d.client) qs.set("client", d.client); if (d.project) qs.set("project", d.project); if (d.stage) qs.set("stage", String(d.stage)); if (d.period.custom) { qs.set("from", d.period.from); qs.set("to", d.period.to); }
     fetch(`/api/insights${qs.size ? `?${qs}` : ""}`)
       .then((r) => r.json())
       .then((j) => { if (live) setIns({ narrative: j.narrative ?? ruleText, source: j.source ?? "rules", generated_at: j.generated_at ?? null, loading: false }); })
       .catch(() => { if (live) setIns({ narrative: ruleText, source: "rules", generated_at: null, loading: false }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findingsKey, d.studio, d.client, d.project, d.stage]);
+  }, [findingsKey, d.studio, d.client, d.project, d.stage, d.period.custom, d.period.from, d.period.to]);
   const text = ins.narrative;
   const [tab, setTab] = useState<Tab>("brief");
   const [nameFilter, setNameFilter] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [timelineMode, setTimelineMode] = useState<"milestones" | "calendar">("milestones");
   const searchWrapRef = useRef<HTMLDivElement>(null);
+  const [sub, setSub] = useState<string>("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [span, setSpan] = useState<6 | 12>(6);
   const [studioMode, setStudioMode] = useState<"recorded" | "projected">("recorded");
@@ -74,42 +87,34 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   const dialog = useRef<HTMLDialogElement>(null);
 
   const tabsKey = TABS.join(",");
+  const readHash = useRef<string | null>(null);
   useEffect(() => {
-    const syncHash = () => {
-      const h = location.hash.slice(1) as Tab;
-      if (TABS.includes(h)) {
-        setTab(h);
-        window.history.replaceState(null, "", location.pathname + location.search + location.hash);
-      }
+    const list = tabsKey.split(",") as Tab[];
+    const read = () => {
+      const [h, s] = location.hash.slice(1).split("/") as [Tab, string | undefined];
+      const t = list.includes(h) ? h : list[0];
+      setTab(t); setSub(SUBS[t]?.some(([k]) => k === s) ? s! : SUBS[t]?.[0][0] ?? "");
+      readHash.current = `${t}/${s ?? ""}`;
     };
-    const init = location.hash.slice(1) as Tab;
-    if (TABS.includes(init)) {
-      setTab(init);
-      window.history.replaceState(null, "", location.pathname + location.search + location.hash);
-    } else {
-      setTab((prev) => (TABS.includes(prev) ? prev : TABS[0]));
-    }
-    addEventListener("hashchange", syncHash);
-    return () => removeEventListener("hashchange", syncHash);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    read(); addEventListener("hashchange", read); return () => removeEventListener("hashchange", read);
   }, [tabsKey]);
+  // router.refresh() rewrites the URL without its #tab; put it back so the open tab survives refreshes and reloads.
+  // Only write once state reflects what read() parsed, so the initial "brief" never overwrites a deep link.
+  useEffect(() => {
+    if (!readHash.current) return;
+    const [rt] = readHash.current.split("/");
+    if (rt !== tab) return;
+    const want = sub && sub !== SUBS[tab]?.[0][0] ? `${tab}/${sub}` : tab;
+    if (location.hash.slice(1) !== want) history.replaceState(history.state, "", `${location.pathname}${location.search}#${want}`);
+  });
   const setMonth = (m: string) => {
     const u = new URL(location.href); u.searchParams.set("month", m);
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 4200); return () => clearTimeout(t); }, [toast]);
-  // Live: pick up changes made elsewhere (another person, or an AI assistant through the MCP server).
-  useEffect(() => {
-    const tick = () => {
-      if (document.visibilityState === "visible") {
-        if (location.hash) window.history.replaceState(null, "", location.pathname + location.search + location.hash);
-        router.refresh();
-      }
-    };
-    const id = setInterval(tick, 30000);
-    addEventListener("focus", tick); document.addEventListener("visibilitychange", tick);
-    return () => { clearInterval(id); removeEventListener("focus", tick); document.removeEventListener("visibilitychange", tick); };
-  }, [router]);
+  // Pick up changes made elsewhere (another person, or an AI assistant through the MCP server) on demand only.
+  // No timer or focus refresh: those re-rendered the page mid-task. Saves already refresh via revalidatePath.
+  const refreshData = () => start(() => { router.refresh(); setToast("Data refreshed"); });
   const openDraft = (agent: AgentName, ref: string) => start(async () => {
     const r = await getDraft({ agent, ref });
     if (r.ok) { setDraft(r.draft); draftDialog.current?.showModal(); } else setToast(r.message);
@@ -118,13 +123,37 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     const r = await getEscalationDraft(rowNo);
     if (r.ok) { setDraft(r.draft); draftDialog.current?.showModal(); } else setToast(r.message);
   });
+  // Filters live in the URL and re-render on the server (a few seconds). Hold the user's pick locally meanwhile so
+  // dropdowns and chips show it at once instead of snapping back to the old value.
+  type Filt = { client: string | null; project: string | null; studio: string | null; stage: number | null };
+  const [optF, setOptF] = useState<Partial<Filt> | null>(null);
+  useEffect(() => { if (!pending) setOptF(null); }, [pending]);
+  const fv: Filt = { client: d.client ?? null, project: d.project ?? null, studio: d.studio ?? null, stage: d.stage ?? null, ...optF };
+  const studioLocked = role === "project_manager" && !!roleStudio;
+  // Page date range (Brief, Cash, Leakage): ?from&to in the URL, held locally while the server re-renders.
+  const [optR, setOptR] = useState<Range | null | undefined>(undefined);
+  useEffect(() => { if (!pending) setOptR(undefined); }, [pending]);
+  const rv: Range | null = optR !== undefined ? optR : d.period.custom ? { from: d.period.from, to: d.period.to } : null;
+  const setRange = (r: Range | null) => {
+    setOptR(r);
+    const u = new URL(location.href);
+    if (r) { u.searchParams.set("from", r.from); u.searchParams.set("to", r.to); } else { u.searchParams.delete("from"); u.searchParams.delete("to"); }
+    start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
+  };
+  const ranged = !!rv;
+  const rangePicker = <DateRange value={rv} onChange={setRange} today={d.today} busy={pending && optR !== undefined}
+    defaultLabel={monthLabel(d.reportMonth)} defaultName="Report month" defaultHint={`${monthLabel(d.reportMonth)} · latest billing`} />;
+  const leakPicker = <DateRange value={rv} onChange={setRange} today={d.today} busy={pending && optR !== undefined}
+    defaultLabel="All time" defaultHint="Every open item" hideAll />;
   const setStudio = (s: string) => {
+    setOptF((o) => ({ ...o, studio: s || null, stage: null }));
     const u = new URL(location.href);
     if (s) u.searchParams.set("studio", s); else u.searchParams.delete("studio");
     u.searchParams.delete("stage");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   const setClient = (c: string) => {
+    setOptF((o) => ({ ...o, client: c || null, project: null, stage: null, ...(studioLocked ? {} : { studio: null }) }));
     const u = new URL(location.href);
     if (c) u.searchParams.set("client", c); else u.searchParams.delete("client");
     u.searchParams.delete("project");
@@ -139,18 +168,27 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       const ownerNode = d.clients.find((c) => (clientName ? c.client === clientName : c.projects.some((p) => p.project_number === pn)));
       const owner = clientName ?? ownerNode?.client;
       if (owner) u.searchParams.set("client", owner);
+      let dropStudio = false;
       if (!(role === "project_manager" && roleStudio)) {
         const projNode = ownerNode?.projects.find((p) => p.project_number === pn);
         const curStudio = u.searchParams.get("studio");
-        if (curStudio && !projNode?.studios.some((s) => s.studio === curStudio)) u.searchParams.delete("studio");
+        if (curStudio && !projNode?.studios.some((s) => s.studio === curStudio)) { u.searchParams.delete("studio"); dropStudio = true; }
       }
+      setOptF((o) => ({ ...o, project: pn, stage: null, ...(owner ? { client: owner } : {}), ...(dropStudio ? { studio: null } : {}) }));
     } else {
       u.searchParams.delete("project");
+      setOptF((o) => ({ ...o, project: null, stage: null }));
     }
     u.searchParams.delete("stage");
     start(() => router.push(u.pathname + u.search + u.hash, { scroll: false }));
   };
   const setStage = (id: number | null, meta?: { client?: string; project?: string; studio?: string | null }) => {
+    setOptF((o) => ({
+      ...o, stage: id,
+      ...(id != null && meta?.client ? { client: meta.client } : {}),
+      ...(id != null && meta?.project ? { project: meta.project } : {}),
+      ...(id != null && meta?.studio !== undefined && !studioLocked ? { studio: meta.studio } : {}),
+    }));
     const u = new URL(location.href);
     if (id != null) {
       u.searchParams.set("stage", String(id));
@@ -167,6 +205,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
   };
   const resetFilters = () => {
     setNameFilter("");
+    setOptF((o) => ({ ...o, client: null, project: null, stage: null, ...(studioLocked ? {} : { studio: null }) }));
     const u = new URL(location.href);
     u.searchParams.delete("client");
     u.searchParams.delete("project");
@@ -179,39 +218,39 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     [d.clients],
   );
   const projectOptions = useMemo(() => {
-    const src = d.client ? d.clients.filter((c) => c.client === d.client) : d.clients;
+    const src = fv.client ? d.clients.filter((c) => c.client === fv.client) : d.clients;
     return src.flatMap((c) => c.projects.map((p) => {
       const pname = (p.name ?? p.project_number).trim();
       return {
         project_number: p.project_number,
         client: c.client,
         sortKey: pname,
-        label: d.client ? `${pname} (${p.project_number})` : `${pname} · ${c.client} (${p.project_number})`,
+        label: fv.client ? `${pname} (${p.project_number})` : `${pname} · ${c.client} (${p.project_number})`,
       };
     })).sort((a, b) => a.sortKey.localeCompare(b.sortKey, "en-IN", { sensitivity: "base" }));
-  }, [d.clients, d.client]);
+  }, [d.clients, fv.client]);
   const studioOptions = useMemo(() => {
-    if (d.project) {
-      const proj = d.clients.flatMap((c) => c.projects).find((p) => p.project_number === d.project);
+    if (fv.project) {
+      const proj = d.clients.flatMap((c) => c.projects).find((p) => p.project_number === fv.project);
       if (proj) return [...new Set(proj.studios.map((s) => s.studio).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
     }
-    if (d.client) {
-      const c = d.clients.find((x) => x.client === d.client);
+    if (fv.client) {
+      const c = d.clients.find((x) => x.client === fv.client);
       if (c) return [...new Set(c.projects.flatMap((p) => p.studios.map((s) => s.studio)).filter((s): s is string => !!s))].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
     }
     return [...d.allStudios].sort((a, b) => a.localeCompare(b, "en-IN", { sensitivity: "base" }));
-  }, [d.clients, d.client, d.project, d.allStudios]);
+  }, [d.clients, fv.client, fv.project, d.allStudios]);
   const stageOptions = useMemo(() => {
-    const cNode = d.client ? d.clients.find((c) => c.client === d.client) : null;
-    const targetProjects = d.project
-      ? d.clients.flatMap((c) => c.projects.map((p) => ({ client: c.client, project: p }))).filter((x) => x.project.project_number === d.project)
+    const cNode = fv.client ? d.clients.find((c) => c.client === fv.client) : null;
+    const targetProjects = fv.project
+      ? d.clients.flatMap((c) => c.projects.map((p) => ({ client: c.client, project: p }))).filter((x) => x.project.project_number === fv.project)
       : cNode && cNode.projects.length === 1
         ? [{ client: cNode.client, project: cNode.projects[0] }]
         : [];
     const seen = new Set<number>();
     return targetProjects.flatMap(({ project }) =>
       [...project.studios]
-        .filter((s) => !d.studio || s.studio === d.studio)
+        .filter((s) => !fv.studio || s.studio === fv.studio)
         .sort((a, b) => (a.studio ?? "").localeCompare(b.studio ?? "", "en-IN", { sensitivity: "base" }))
         .flatMap((s) => s.stages.filter((st) => {
           if (seen.has(st.id)) return false;
@@ -219,48 +258,85 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           return true;
         }).map((st) => ({
           id: st.id,
-          label: `${d.studio ? "" : `${s.studio ?? "—"} · `}#${st.seq} ${shorten(st.stage, 42)} (${inr(st.fee)})`,
+          label: `${fv.studio ? "" : `${s.studio ?? "—"} · `}#${st.seq} ${shorten(st.stage, 42)} (${inr(st.fee)})`,
         }))),
     );
-  }, [d.clients, d.client, d.project, d.studio]);
+  }, [d.clients, fv.client, fv.project, fv.studio]);
   const clientPick = (
-    <label className="pill studio-pick">
+    <label className="pill studio-pick k-client" data-on={fv.client ? "" : undefined}>
       <span className="sr">Client</span>
-      <select aria-label="Client" value={d.client ?? ""} onChange={(e) => setClient(e.target.value)}>
+      <select aria-label="Client" value={fv.client ?? ""} onChange={(e) => setClient(e.target.value)}>
         <option value="">All clients</option>
         {clientOptions.map((c) => <option key={c.client} value={c.client}>{c.client}</option>)}
-        {d.client && !clientOptions.some((c) => c.client === d.client) && <option value={d.client}>{d.client}</option>}
+        {fv.client && !clientOptions.some((c) => c.client === fv.client) && <option value={fv.client}>{fv.client}</option>}
       </select>
     </label>
   );
   const projectPick = (
-    <label className="pill studio-pick">
+    <label className="pill studio-pick k-project" data-on={fv.project ? "" : undefined}>
       <span className="sr">Project</span>
-      <select aria-label="Project" value={d.project ?? ""} onChange={(e) => setProject(e.target.value)}>
+      <select aria-label="Project" value={fv.project ?? ""} onChange={(e) => setProject(e.target.value)}>
         <option value="">All projects</option>
         {projectOptions.map((p, idx) => <option key={`${p.client}-${p.project_number}-${idx}`} value={p.project_number}>{p.label}</option>)}
-        {d.project && !projectOptions.some((p) => p.project_number === d.project) && <option value={d.project}>{d.project}</option>}
+        {fv.project && !projectOptions.some((p) => p.project_number === fv.project) && <option value={fv.project}>{fv.project}</option>}
       </select>
     </label>
   );
   const studioPick = role === "project_manager" && roleStudio ? <span className="pill">{roleStudio}</span> : (
-    <label className="pill studio-pick">
+    <label className="pill studio-pick k-studio" data-on={fv.studio ? "" : undefined}>
       <span className="sr">Studio</span>
-      <select aria-label="Studio" value={d.studio ?? ""} onChange={(e) => setStudio(e.target.value)}>
+      <select aria-label="Studio" value={fv.studio ?? ""} onChange={(e) => setStudio(e.target.value)}>
         <option value="">All studios</option>
         {studioOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-        {d.studio && !studioOptions.includes(d.studio) && <option value={d.studio}>{d.studio}</option>}
+        {fv.studio && !studioOptions.includes(fv.studio) && <option value={fv.studio}>{fv.studio}</option>}
       </select>
     </label>
   );
   const stagePick = (
-    <label className="pill studio-pick">
+    <label className="pill studio-pick k-stage" data-on={fv.stage != null ? "" : undefined}>
       <span className="sr">Milestone</span>
-      <select aria-label="Milestone" value={d.stage != null ? String(d.stage) : ""} onChange={(e) => setStage(e.target.value ? Number(e.target.value) : null)}>
+      <select aria-label="Milestone" value={fv.stage != null ? String(fv.stage) : ""} onChange={(e) => setStage(e.target.value ? Number(e.target.value) : null)}>
         <option value="">All milestones</option>
         {stageOptions.map((st) => <option key={st.id} value={String(st.id)}>{st.label}</option>)}
       </select>
     </label>
+  );
+  // Applied filters as readable, removable chips under the eyebrow.
+  type Chip = { k: "client" | "project" | "studio" | "stage" | "search"; label: string; value: string; sub?: string; full: string; clear?: () => void };
+  const chips: Chip[] = (() => {
+    const out: Chip[] = [];
+    const projects = d.clients.flatMap((c) => c.projects);
+    if (fv.client) out.push({ k: "client", label: "Client", value: fv.client, full: fv.client, clear: () => setClient("") });
+    if (fv.project) {
+      const p = projects.find((x) => x.project_number === fv.project);
+      const name = (p?.name ?? fv.project).trim();
+      out.push({ k: "project", label: "Project", value: shorten(name, 34), sub: p?.name ? fv.project : undefined, full: `${name} (${fv.project})`, clear: () => setProject("") });
+    }
+    if (fv.studio) out.push({ k: "studio", label: "Studio", value: fv.studio, full: fv.studio, clear: studioLocked ? undefined : () => setStudio("") });
+    if (fv.stage != null) {
+      let st: { seq: number; stage: string | null; fee: number | null } | undefined;
+      for (const p of projects) for (const s of p.studios) { st ??= s.stages.find((x) => x.id === fv.stage); }
+      const full = st ? `#${st.seq} ${st.stage ?? ""}`.trim() : `Milestone ${fv.stage}`;
+      out.push({ k: "stage", label: "Milestone", value: st ? `#${st.seq} ${shorten(st.stage, 30)}` : `#${fv.stage}`, sub: st?.fee != null ? inr(st.fee) : undefined, full, clear: () => setStage(null) });
+    }
+    if (nameFilter.trim()) out.push({ k: "search", label: "Search", value: `“${nameFilter.trim()}”`, full: nameFilter.trim(), clear: () => setNameFilter("") });
+    return out;
+  })();
+  const clearable = chips.some((c) => c.clear);
+  const filterChips = (chips.length > 0 || pending) && (
+    <div className={`fchips${pending ? " busy" : ""}`} aria-live="polite">
+      {chips.length > 0 && <span className="fchips-lbl">Showing</span>}
+      {chips.map((c) => (
+        <span key={c.k} className={`fchip k-${c.k}`} title={`${c.label}: ${c.full}`}>
+          <i>{c.label}</i>
+          <b>{c.value}</b>
+          {c.sub && <small>{c.sub}</small>}
+          {c.clear && <button type="button" aria-label={`Remove ${c.label.toLowerCase()} filter`} onClick={c.clear}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg></button>}
+        </span>
+      ))}
+      {clearable && <button type="button" className="fchips-clear" onClick={resetFilters}>Clear all</button>}
+      {pending && <span className="fchips-busy"><i />Updating</span>}
+    </div>
   );
 
   useEffect(() => {
@@ -467,7 +543,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
     const outstanding = open.reduce((a, i) => a + (Number(i.balance) || 0), 0);
     const late = open.filter((i) => i.days_overdue > 0).reduce((a, i) => a + (Number(i.balance) || 0), 0);
     const monthPays = d.payments.filter((p) => {
-      if (!p.date.startsWith(d.reportMonth)) return false;
+      if (p.date.slice(0, 10) < d.period.from || p.date.slice(0, 10) > d.period.to) return false;
       const lbl = (p.project ?? "").toLowerCase();
       return lbl && (projNames.has(lbl) || clientNames.has(lbl) || [...pns].some((pn) => lbl.includes(pn.toLowerCase())));
     });
@@ -481,7 +557,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       kpi: { ...d.kpi, contract, billedTotal, yetToBill, outstanding, late, collectedMonth, openCount: open.length },
       pipeline, open, lastPay, timeline,
     };
-  }, [q, matchedClients, d.kpi, d.pipeline, d.open, d.lastPay, d.payments, d.reportMonth, d.stage, d.project]);
+  }, [q, matchedClients, d.kpi, d.pipeline, d.open, d.lastPay, d.payments, d.period.from, d.period.to, d.stage, d.project]);
 
   const k = d.kpi;
   const ck = cashView.kpi;
@@ -507,6 +583,9 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         <div className="tools">
           {tab !== "ask" && show("ask") && <a className="icon" href="#ask" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg></a>}
           <Bell notes={notifications} />
+          <button type="button" className="icon" onClick={refreshData} disabled={pending} title="Refresh data" aria-label="Refresh data">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" /><path d="M21 3v5h-5" /></svg>
+          </button>
           <button type="button" className="icon theme-btn" onClick={toggleTheme} title="Switch light / dark theme">
             <span className="only-dark">
               <span className="sr">Switch to light theme</span>
@@ -527,16 +606,25 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
         </div>
       </header>
 
+      {SUBS[tab] && <nav className="subtabs" aria-label="Sub-pages">
+        {SUBS[tab]!.map(([kk, label], i) => <a key={kk} href={i ? `#${tab}/${kk}` : `#${tab}`} aria-current={sub === kk ? "page" : undefined}>{label}
+          {tab === "agents" && kk === "approvals" && <i className="cnt">{[d.agents.collection, d.agents.invoiceTrigger, d.agents.contractWatch].filter(Boolean).length}</i>}
+          {tab === "agents" && kk === "po-intake" && box && box.kpi.ready + box.kpi.held > 0 && <i className="cnt pink">{box.kpi.ready + box.kpi.held}</i>}
+          {tab === "cash" && kk === "leakage" && <i className="cnt pink">new</i>}</a>)}
+      </nav>}
       {setupError && tab !== "connect" && <div className="banner">{setupError}</div>}
       {/* ================= BRIEF ================= */}
       <main className="screen hero" hidden={tab !== "brief" || !show("brief")}>
         <div className="eyebrow">Daily brief · {niceDate(d.today)}{d.studio ? ` · ${d.studio}` : ""}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}</div>
         <h1>{greeting()}. <em>Here is what needs you.</em></h1>
+        <div className="brief-kpirow">
         <div className="a-kpis num">
           <div><div className="big">{inr(k.contract)}</div><div className="biglbl">Contract value</div></div>
-          <div><div className="big">{inr(k.billedMonth)}</div><div className="biglbl">Billed in {month.split(" ")[0]}</div></div>
-          <div><div className="big">{inr(k.collectedMonth)}</div><div className="biglbl">Collected</div></div>
-          <div><div className="big">{inr(k.outstanding)}</div><div className="biglbl">Outstanding</div></div>
+          <div><div className="big">{inr(k.billedMonth)}</div><div className="biglbl">{d.period.custom ? "Billed in period" : `Billed in ${month.split(" ")[0]}`}</div></div>
+          <div><div className="big">{inr(k.collectedMonth)}</div><div className="biglbl">{d.period.custom ? "Collected in period" : "Collected"}</div></div>
+          <div><div className="big">{inr(k.outstanding)}</div><div className="biglbl">{d.period.custom ? "Outstanding · raised in period" : "Outstanding"}</div></div>
+        </div>
+        {rangePicker}
         </div>
         <div className="a-row1">
           <section className="brief">
@@ -555,7 +643,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <div className="src">{plural(k.openCount, "open invoice")} · Zoho Books{d.zohoIsSample ? " (sample)" : ""}</div>
           </section>
           <section className="card since">
-            <h2>Since yesterday</h2>
+            <h2>{d.period.custom ? "In this period" : "Since yesterday"}</h2>
             <div className="rows">
               <div className="srow"><span>Invoices raised</span><span className="vchip">{d.since.invoices}</span></div>
               <div className="srow"><span>Stages completed</span><span className="vchip">{d.since.stages}</span></div>
@@ -591,10 +679,16 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       </main>
 
       {/* ================= CASH ================= */}
-      <main className="screen hero" hidden={tab !== "cash" || !show("cash")}>
-        <div className="eyebrow">Stage-to-cash · {month}{d.client ? ` · ${d.client}` : ""}{d.project ? ` · ${d.project}` : ""}{d.studio ? ` · ${d.studio}` : ""}{d.stage ? ` · Milestone #${d.stage}` : ""}{q ? ` · Search: "${nameFilter.trim()}"` : ""}</div>
-        <div className="b-head">
-          <h1>Every rupee, <em>from sign-off to bank.</em></h1>
+      {show("cash") && <main className="screen hero" hidden={tab !== "cash" || sub !== "leakage"}>
+        <LeakageView l={leak} role={role} roleStudio={roleStudio} studio={d.studio} run={run} pending={pending} rangeSlot={leakPicker} rangeLabel={ranged ? d.period.label : null} />
+      </main>}
+      <main className="screen hero" hidden={tab !== "cash" || sub === "leakage" || !show("cash")}>
+        <div className="page-top">
+          <div className="eyebrow">Stage-to-cash · {d.period.label}</div>
+          {rangePicker}
+        </div>
+        {filterChips}
+        <div className={`b-head cash-bar${pending ? " busy" : ""}`}>
           <div className="acts">
             <div className="search-wrap" ref={searchWrapRef}>
               <input
@@ -649,21 +743,19 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             {projectPick}
             {studioPick}
             {stageOptions.length > 0 && stagePick}
-            {(d.client || d.project || d.stage || nameFilter || (d.studio && !(role === "project_manager" && roleStudio))) && <button className="pill" onClick={resetFilters}>Reset filters</button>}
-            {can(role, "stage.complete") && <button className="pill pink" onClick={() => dialog.current?.showModal()}>Mark stage complete</button>}
           </div>
         </div>
         <div className="b-kpis num">
           <div><label>{d.stage ? "Milestone value" : q ? "Matching value" : d.studio ? "Studio value" : d.project ? "Project value" : "Contract value"}</label><div className="kpill">{inr(ck.contract)}</div></div>
           <div><label>Billed to date{ck.contract ? ` · ${Math.round((ck.billedTotal / ck.contract) * 100)}%` : ""}</label><div className="kpill light">{inr(ck.billedTotal)}</div></div>
           <div><label>Yet to bill</label><div className="kpill">{inr(ck.yetToBill)}</div></div>
-          <div><label>Outstanding</label><div className="kpill pink">{inr(ck.outstanding)}</div></div>
-          <div><label>Collected ({month.split(" ")[0]})</label><div className="kpill stripe">{inr(ck.collectedMonth)}</div></div>
+          <div><label>{d.period.custom ? "Outstanding · raised in period" : "Outstanding"}</label><div className="kpill pink">{inr(ck.outstanding)}</div></div>
+          <div><label>{d.period.custom ? "Collected in period" : `Collected (${month.split(" ")[0]})`}</label><div className="kpill stripe">{inr(ck.collectedMonth)}</div></div>
         </div>
         <div className="stages">
           {cashView.pipeline.map((p, i) => (
             <section key={p.status} className="card stage">
-              <div className="shead"><span>{["STAGE COMPLETE", "CLIENT APPROVED", "FINANCE NOTIFIED"][i]}</span><i className="step">{i + 1}</i></div>
+              <div className="shead"><span>{["STAGE COMPLETE", "CLIENT APPROVED", "FINANCE NOTIFIED"][i]}{d.period.custom && <em className="live" title="Work waiting now, whatever the date range">Live</em>}</span><i className="step">{i + 1}</i></div>
               <div className="n num">{p.count}</div>
               <div className="what">{["Marked by studio directors", "Sign-off captured", "Invoice pending"][i]}{p.count ? ` · ${inr(p.value)}` : ""}</div>
               {p.items.length ? (
@@ -678,7 +770,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
                     </div>
                   ))}
                 </div>
-              ) : <div className="sbox"><b>Nothing here</b><div className="v">{i === 0 ? "Use Mark stage complete" : "Waiting on the step before"}</div></div>}
+              ) : <div className="sbox"><b>Nothing here</b><div className="v">{i === 0 ? "Mark stages complete in the client list below" : "Waiting on the step before"}</div></div>}
             </section>
           ))}
           <section className="card stage hot">
@@ -692,9 +784,9 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           <section className="card stage">
             <div className="shead"><span>COLLECTED</span><i className="step">5</i></div>
             <div className="n num">{inr(ck.collectedMonth)}</div>
-            <div className="what">Net of TDS · {month}</div>
+            <div className="what">Net of TDS · {d.period.label}</div>
             {cashView.lastPay ? <div className="sbox"><b>{cashView.lastPay.payment_number} · {cashView.lastPay.project ?? "receipt"}</b><div className="v">{inr(cashView.lastPay.amount)} · {inr(cashView.lastPay.tax_amount_withheld)} TDS</div><div className="s">Matched in Zoho Books</div></div>
-              : <div className="sbox"><b>No receipts in {month}</b><div className="v">Zoho Books{d.zohoIsSample ? " sample data" : ""}</div></div>}
+              : <div className="sbox"><b>No receipts in {d.period.label}</b><div className="v">Zoho Books{d.zohoIsSample ? " sample data" : ""}</div></div>}
           </section>
         </div>
         <div className="b-bottom">
@@ -850,22 +942,30 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       </main>
 
       {/* ================= PLAN ================= */}
-      {show("plan") && <main className="screen hero" hidden={tab !== "plan"}>
-        <PlanTab plan={plan} esc={esc} proj={proj} month={projMonth} role={role} studio={d.studio} openStages={d.openStages} run={run} pending={pending} setMonth={setMonth} onEscDraft={openEscDraft} />
+      {show("plan") && <main className="screen hero" hidden={tab !== "plan" || sub === "forecast"}>
+        <PlanTab part={sub === "projection" ? "projection" : "outlook"} plan={plan} esc={esc} proj={proj} month={projMonth} role={role} studio={d.studio} openStages={d.openStages} run={run} pending={pending} setMonth={setMonth} onEscDraft={openEscDraft} />
+      </main>}
+      {show("plan") && <main className="screen hero" hidden={tab !== "plan" || sub !== "forecast"}>
+        <ForecastView f={fc} backtest={bt} role={role} studio={d.studio} run={run} pending={pending} />
       </main>}
 
       {/* ================= FINANCE ================= */}
       {show("finance") && <main className="screen hero" hidden={tab !== "finance"}>
-        <FinanceTab queue={fq} open={d.open} payments={d.payments} role={role} run={run} pending={pending} zohoSample={d.zohoIsSample} onDraft={(id) => openDraft("invoice_trigger", String(id))} toast={setToast} />
+        <FinanceTab queue={fq} open={d.openAll} payments={d.payments} role={role} run={run} pending={pending} zohoSample={d.zohoIsSample} onDraft={(id) => openDraft("invoice_trigger", String(id))} toast={setToast} />
       </main>}
 
       {/* ================= TRACKER ================= */}
-      {show("tracker") && <main className="screen hero" hidden={tab !== "tracker"}>
-        <TrackerTab studio={d.studio} client={d.client} project={d.project} active={tab === "tracker"} />
-      </main>}
 
       {/* ================= AGENTS ================= */}
-      <main className="screen hero" hidden={tab !== "agents" || !show("agents")}>
+      {show("agents") && <main className="screen hero" hidden={tab !== "agents" || sub !== "po-intake"}>
+        <PoInbox box={box} role={role} run={run} pending={pending} toast={setToast} />
+      </main>}
+      {show("agents") && <main className="screen hero" hidden={tab !== "agents" || sub !== "activity"}>
+        <div className="eyebrow">Agents · activity</div>
+        <h1>What the agents did, <em>and what they skipped.</em></h1>
+        <PoActivity box={box} />
+      </main>}
+      <main className="screen hero" hidden={tab !== "agents" || sub !== "approvals" || !show("agents")}>
         <div className="eyebrow">Agent desk · {plural([d.agents.collection, d.agents.invoiceTrigger, d.agents.contractWatch].filter(Boolean).length, "action")} waiting · 9 agents active</div>
         <div className="b-head">
           <h1>The agents did the chasing. <em>You approve.</em></h1>
@@ -898,7 +998,7 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
                   <div className="ev">Evidence: Summary row {d.agents.contractWatch.row_no}, {d.agents.contractWatch.project_number}</div>
                   <Buttons primary="Draft extension" allowed={can(role, "agent.contract_watch")} pending={pending} onPrimary={() => run(decide({ agent: "contract_watch", ref: String(d.agents.contractWatch!.row_no), decision: "approved" }))} onDismiss={() => run(decide({ agent: "contract_watch", ref: String(d.agents.contractWatch!.row_no), decision: "dismissed" }))} onEdit={() => openDraft("contract_watch", String(d.agents.contractWatch!.row_no))} />
                 </article>) : <Empty agent="Contract watch" tone="t-amber" text="No contract with billing left ends in the next 60 days." />}
-              {(() => { const n = pos.filter((p) => p.status === "pending_review").length; return <article className="acard"><div className="dmeta"><span className="tag" style={{ color: "var(--fg)" }}>Extraction</span><span>{n ? `${n} to review` : "Clear"}</span></div><h3>{n ? `Review ${plural(n, "staged PO")}` : "No POs waiting"}</h3><p>{n ? "An assistant extracted these from Outlook, a folder or an attachment. Check the numbers, then approve them into the tracker." : "Ask Claude, ChatGPT or Codex (via Connect AI) to read a PO and stage it. It appears here for review."}</p>{n > 0 && <div className="abtns"><button className="pill solid" onClick={() => document.querySelector(".po-intake")?.scrollIntoView({ behavior: "smooth" })}>Open PO intake</button></div>}</article>; })()}
+              {(() => { const n = pos.filter((p) => p.status === "pending_review").length; return <article className="acard"><div className="dmeta"><span className="tag" style={{ color: "var(--fg)" }}>Extraction</span><span>{n ? `${n} to review` : "Clear"}</span></div><h3>{n ? `Review ${plural(n, "staged PO")}` : "No POs waiting"}</h3><p>{n ? "An assistant extracted these from Outlook, a folder or an attachment. Check the numbers, then approve them into the tracker." : "Ask Claude, ChatGPT or Gemini (via Connect AI) to read a PO and stage it. It appears here for review."}</p>{n > 0 && <div className="abtns"><a className="pill solid" href="#agents/po-intake">Open PO intake</a></div>}</article>; })()}
               {(() => {
                 const ev = emailEvidence[0];
                 if (!ev) return <Empty agent="Email evidence" tone="t-blue" text="No project email citations found in this filter." />;
@@ -909,7 +1009,6 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
                     <p>{ev.excerpt}</p>
                     <div className="ev">Source: {ev.from} → {ev.to} ({ev.source})</div>
                     <div className="abtns">
-                      <a className="pill solid" href="#mail">Open in Mail</a>
                       <button className="pill" onClick={() => navigator.clipboard?.writeText(`${ev.subject} (${ev.from}, ${ev.date}): "${ev.excerpt}"`).then(() => setToast("Citation copied"), () => setToast("Copy failed"))}>Copy citation</button>
                     </div>
                   </article>
@@ -974,7 +1073,6 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             </section>
           </div>
         </div>
-        <PoIntake pos={pos} role={role} run={run} pending={pending} toast={setToast} />
         {(() => {
           const visibleRuns = runs.filter((r) => auditFilter === "all" ? true : auditFilter === "ui" ? r.is_ui : !r.is_ui);
           return (
@@ -1118,9 +1216,6 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
       </main>
 
       {/* ================= MAIL ================= */}
-      {show("mail") && <main className="screen hero" hidden={tab !== "mail"}>
-        <MailTab projects={d.timeline} clients={d.clients} open={d.open} notifications={notifications} onDraft={openDraft} toast={setToast} />
-      </main>}
 
       <dialog ref={draftDialog} className="sheet" aria-labelledby="draft-title" onClose={() => setDraft(null)}>
         {draft && (

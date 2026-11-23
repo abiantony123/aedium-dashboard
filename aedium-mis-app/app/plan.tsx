@@ -31,8 +31,8 @@ function ConsRow({ c, editable, pending, run }: { c: ConsItem; editable: boolean
   );
 }
 
-export default function PlanTab({ plan, esc, proj, month, role, studio, openStages, run, pending, setMonth, onEscDraft }:
-  { plan: Plan | null; esc: Esc; proj: Proj | null; month: string; role: Role; studio: string | null; openStages: Dash["openStages"]; run: Run; pending: boolean; setMonth: (m: string) => void; onEscDraft: (rowNo: number) => void }) {
+export default function PlanTab({ part = "outlook", plan, esc, proj, month, role, studio, openStages, run, pending, setMonth, onEscDraft }:
+  { part?: "outlook" | "projection"; plan: Plan | null; esc: Esc; proj: Proj | null; month: string; role: Role; studio: string | null; openStages: Dash["openStages"]; run: Run; pending: boolean; setMonth: (m: string) => void; onEscDraft: (rowNo: number) => void }) {
   const [target, setTarget] = useState(plan?.total.target != null ? String(Math.round(plan.total.target / 1e5)) : "");
   const [form, setForm] = useState({ stage: "", week: "1", amount: "", description: "" });
   if (!plan || !proj) return <div className="banner">Plan needs the latest SQL migration (supabase/migrations/20261118000000_po_plan_finance_rbac.sql).</div>;
@@ -44,8 +44,9 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
 
   return (
     <>
-      <div className="eyebrow">Plan · FY {plan.fy}{studio ? ` · ${studio}` : ""}</div>
-      <h1>What can we bill this year? <em>And this month?</em></h1>
+      <div className="eyebrow">Plan · FY {plan.fy}{studio ? ` · ${studio}` : ""}{part === "projection" ? " · monthly projection" : ""}</div>
+      <h1>{part === "projection" ? <>What will we bill this month? <em>Week by week.</em></> : <>What can we bill this year? <em>And this month?</em></>}</h1>
+      {part === "outlook" && <>
 
       <div className="p-grid">
         <section className="mult p-fy">
@@ -91,7 +92,8 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
         ))}
       </section>
 
-      <section className="card p-proj">
+      </>}
+      {part === "projection" && <section className="card p-proj">
         <div className="dhead">
           <h2>Monthly projection</h2>
           <div className="acts">
@@ -150,9 +152,9 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
             <button className="pill pink" disabled={pending}>Add forecast</button>
           </form>
         )}
-      </section>
+      </section>}
 
-      <section className="card p-esc">
+      {part === "outlook" && <section className="card p-esc">
         <div className="dhead"><h2>Escalation</h2><span className="note">Rate read from each contract&apos;s clause, applied per started year after the end date on the amount still to bill. An estimate: confirm against the PO.</span></div>
         {esc.length ? esc.slice(0, 12).map((e) => (
           <div className="krow" key={e.row_no}>
@@ -167,7 +169,7 @@ export default function PlanTab({ plan, esc, proj, month, role, studio, openStag
             </div>
           </div>
         )) : <div className="empty">No active contract with an escalation clause is past or near its end date.</div>}
-      </section>
+      </section>}
     </>
   );
 }

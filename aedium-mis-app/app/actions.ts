@@ -2,12 +2,15 @@
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { supabaseServer, dataClient, demoMode, PASS_COOKIE, ROLE_COOKIE } from "@/lib/supabase/server";
-import { recordStageEvent, recordDecision, draftEmail, type Actor, type AgentName } from "@/lib/agents/actions";
+import { recordStageEvent, recordDecision, draftEmail, notify, type Actor, type AgentName } from "@/lib/agents/actions";
 import { agentForTool, createKey, logRun, logUiAction, revokeKey, serviceDb } from "@/lib/agents/keys";
 import { runTool, toolsFor, type Scope } from "@/lib/agents/tools";
 import { assertCan, isRole } from "@/lib/rbac";
 import { reviewPo, getPo, excelRows, stagePo } from "@/lib/po";
 import { setTarget, addProjection, deleteProjection, autofillProjection, setConstruction, escalationDraft, decideEscalation } from "@/lib/plan";
+import { correctPo, approveFromInbox, skipDocument, searchPos, revisePo, nextProjectNumber } from "@/lib/inbox";
+import { forecast } from "@/lib/forecast";
+import { decideLeakage, refreshLeakage } from "@/lib/leakage";
 import { raiseInvoice as raiseInv, recordPayment as recordPay, markNotificationsRead } from "@/lib/finance";
 import { decideCodeCompliance, logProjectEmail } from "@/lib/compliance";
 
@@ -144,6 +147,58 @@ export async function setEscalation(input: { row_no: number; decision: "approved
     await logUiAction(actor, "decide_escalation", input);
     return done(input.decision === "approved" ? "Escalation proposed. Send the notice from your mailbox." : "Escalation dismissed");
   } catch (e) { return fail(e); }
+}
+
+// ---- F1 PO intake inbox ----
+export async function correctPoAction(input: { id: number; patch: Parameters<typeof correctPo>[3] }): Promise<Result> {
+  try { const { sb, actor } = await me(); const r = await correctPo(sb, actor, input.id, input.patch); return done(r.failed ? `Saved. ${r.failed} check(s) still fail` : "Saved. All checks pass"); } catch (e) { return fail(e); }
+}
+export async function approveInboxPo(input: { id: number; note?: string; project_number?: string }): Promise<Result> {
+  try { const { sb, actor } = await me(); const r = await approveFromInbox(sb, actor, input.id, input.note, input.project_number); return done(`Approved into the tracker as ${r.project_number}${r.changes ? ` · ${r.changes} change(s) logged` : ""}${r.override ? " · override logged" : ""}`); } catch (e) { return fail(e); }
+}
+export async function searchPosAction(input: { q: string; status?: string }) {
+  try { const { sb, actor } = await me(); assertCan(actor.role, "data.read"); return { ok: true as const, items: await searchPos(sb, input.q, input.status) }; }
+  catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "Search failed.", items: [] }; }
+}
+export async function revisePoAction(id: number) {
+  try { const { sb, actor } = await me(); const r = await revisePo(sb, actor, id); revalidatePath("/"); return { ok: true as const, po_id: r.po_id, message: r.existed ? "A version is already open for review." : "New version opened for editing. Approve it to update the tracker." }; }
+  catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "Could not open a new version." }; }
+}
+export async function suggestProjectNumber(poDate: string | null) {
+  try { const { sb } = await me(); return await nextProjectNumber(sb, poDate); } catch { return ""; }
+}
+export async function notAPo(input: { inbox_id: number; reason: string }): Promise<Result> {
+  try { const { sb, actor } = await me(); await skipDocument(sb, actor, input.inbox_id, input.reason || "Not a purchase order"); return done("Moved to Activity as not a PO"); } catch (e) { return fail(e); }
+}
+export async function poFileUrl(inboxId: number) {
+  try {
+    const { sb, actor } = await me(); assertCan(actor.role, "data.read");
+    const { data: row } = await sb.from("po_inbox").select("file_path").eq("id", inboxId).single();
+    if (!row?.file_path) return { ok: false as const, message: "No file stored for this item." };
+    const { data, error } = await sb.storage.from("po-files").createSignedUrl(row.file_path, 300);
+    if (error) throw new Error(error.message);
+    return { ok: true as const, url: data.signedUrl };
+  } catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "No file." }; }
+}
+
+// ---- F2 forecast ----
+export async function sendPriorities(input: { studio: string | null }): Promise<Result> {
+  try {
+    const { sb, actor } = await me(); assertCan(actor.role, "plan.projection");
+    const f = await forecast(sb, input.studio);
+    const byStudio = new Map<string, typeof f.movers>();
+    for (const m of f.movers) byStudio.set(m.studio ?? "Unassigned", [...(byStudio.get(m.studio ?? "Unassigned") ?? []), m]);
+    for (const [st, ms] of byStudio) await notify(sb, "project_manager", `Stages that move cash · ${st}`, ms.map((m) => `${m.client ?? m.project_number}: ${(m.stage ?? "").slice(0, 60)} · ₹${Math.round(m.fee).toLocaleString("en-IN")} · ${Math.round(m.p * 100)}% by ${f.quarter_end}`).join(" | "), "plan", st);
+    return done(`Sent to ${byStudio.size} studio director${byStudio.size === 1 ? "" : "s"}`);
+  } catch (e) { return fail(e); }
+}
+
+// ---- F4 leakage ----
+export async function decideLeakageAction(input: { id: number; decision: "confirmed" | "corrected" | "dismissed"; reason?: string; corrected_value?: number }): Promise<Result> {
+  try { const { sb, actor } = await me(); const r = await decideLeakage(sb, actor, input.id, input); return done(r.message); } catch (e) { return fail(e); }
+}
+export async function runLeakage(): Promise<Result> {
+  try { const { sb, actor } = await me(); assertCan(actor.role, "leakage.decide"); const r = await refreshLeakage(sb, actor.email); return done(`Run complete · ${r.items} open items · ${r.new} new`); } catch (e) { return fail(e); }
 }
 
 // ---- plan ----

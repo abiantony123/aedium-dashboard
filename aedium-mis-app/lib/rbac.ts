@@ -16,16 +16,17 @@ export const ROLE_NOTE: Record<Role, string> = {
   employee: "Studio view and mail (my work in phase 2).",
 };
 
-export const TABS = ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "studios", "mail", "connect"] as const;
+// Tracker and Mail tabs removed from the dashboard (22 Nov 2026).
+export const TABS = ["brief", "cash", "plan", "finance", "agents", "ask", "studios", "connect"] as const;
 export type TabName = (typeof TABS)[number];
 
 const TAB_ACCESS: Record<Role, TabName[]> = {
   admin: [...TABS],
   ceo: [...TABS],
-  project_manager: ["brief", "cash", "plan", "tracker", "agents", "ask", "studios", "mail", "connect"],
-  finance: ["brief", "cash", "plan", "finance", "tracker", "agents", "ask", "mail", "connect"],
-  hr: ["brief", "studios", "ask", "mail", "tracker"],
-  employee: ["studios", "mail"],
+  project_manager: ["brief", "cash", "plan", "agents", "ask", "studios", "connect"],
+  finance: ["brief", "cash", "plan", "finance", "agents", "ask", "connect"],
+  hr: ["brief", "studios", "ask"],
+  employee: ["studios"],
 };
 
 export type Action =
@@ -33,14 +34,14 @@ export type Action =
   | "finance.invoice" | "finance.payment"
   | "agent.collections" | "agent.invoice_trigger" | "agent.contract_watch"
   | "po.stage" | "po.review"
-  | "plan.target" | "plan.projection" | "plan.construction"
+  | "plan.target" | "plan.projection" | "plan.construction" | "leakage.decide"
   | "keys.manage" | "data.read";
 
 const ACTIONS: Record<Role, Action[]> = {
-  admin: ["stage.complete", "stage.approve", "stage.notify_finance", "finance.invoice", "finance.payment", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "keys.manage", "data.read"],
-  ceo: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "keys.manage", "data.read"],
-  project_manager: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "plan.projection", "plan.construction", "keys.manage", "data.read"],
-  finance: ["finance.invoice", "finance.payment", "agent.collections", "plan.projection", "keys.manage", "data.read"],
+  admin: ["stage.complete", "stage.approve", "stage.notify_finance", "finance.invoice", "finance.payment", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "leakage.decide", "keys.manage", "data.read"],
+  ceo: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.collections", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "po.review", "plan.target", "plan.projection", "plan.construction", "leakage.decide", "keys.manage", "data.read"],
+  project_manager: ["stage.complete", "stage.approve", "stage.notify_finance", "agent.invoice_trigger", "agent.contract_watch", "po.stage", "plan.projection", "plan.construction", "leakage.decide", "keys.manage", "data.read"],
+  finance: ["finance.invoice", "finance.payment", "agent.collections", "plan.projection", "leakage.decide", "keys.manage", "data.read"],
   hr: ["data.read"],
   employee: [],
 };

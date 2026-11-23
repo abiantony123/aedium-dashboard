@@ -141,10 +141,15 @@ export const TOOLS = [
     input: { from_month: z.string().regex(/^\d{4}-\d{2}$/), to_month: z.string().regex(/^\d{4}-\d{2}$/), studio },
     run: async ({ sb }, { from_month, to_month, studio }) => {
       const end = new Date(Date.UTC(Number(to_month.slice(0, 4)), Number(to_month.slice(5, 7)), 0)).toISOString().slice(0, 10);
-      let q = sb.from("billing_stages").select("billed_on,fee").gte("billed_on", `${from_month}-01`).lte("billed_on", end).limit(5000);
-      if (studio) q = q.ilike("studio", `%${clean(studio)}%`);
-      const { data, error } = await q; fail(error);
-      const m = new Map<string, number>(); for (const r of data ?? []) { const k = String(r.billed_on).slice(0, 7); m.set(k, (m.get(k) ?? 0) + (Number(r.fee) || 0)); }
+      const m = new Map<string, number>();
+      // Supabase returns at most 1000 rows per request: page through.
+      for (let from = 0; ; from += 1000) {
+        let q = sb.from("billing_stages").select("billed_on,fee").gte("billed_on", `${from_month}-01`).lte("billed_on", end).order("id").range(from, from + 999);
+        if (studio) q = q.ilike("studio", `%${clean(studio)}%`);
+        const { data, error } = await q; fail(error);
+        for (const r of data ?? []) { const k = String(r.billed_on).slice(0, 7); m.set(k, (m.get(k) ?? 0) + (Number(r.fee) || 0)); }
+        if (!data || data.length < 1000) break;
+      }
       return [...m.entries()].sort().map(([month, billed]) => ({ month, billed }));
     },
   }),

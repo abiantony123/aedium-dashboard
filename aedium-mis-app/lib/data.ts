@@ -1,6 +1,7 @@
 import type { Db as SupabaseClient } from "./supabase/server";
 import { daysBetween } from "./format";
 import { instalmentMonths, instalmentsInWindow, monthsBetween } from "./construction";
+import { inRange, monthEnd, prevRange, presetLabel, rangeLabel, type Range } from "./period";
 
 // ---------- row types (match supabase/migrations) ----------
 export type Line = {
@@ -34,6 +35,10 @@ export type Decision = { agent: string; ref: string; decision: string; created_a
 export type Event = { project_number: string; studio: string | null; seq: number; event: string; created_at: string; actor_email: string | null };
 export type ImportRun = { id: number; source: string; finished_at: string | null; ok: boolean | null; counts: Record<string, unknown> | null; issues: string[] | null; report_month: string | null };
 
+// The tracker ends each Billing Stages block with summary rows ("Billed till date", "Billable", "To be Billed").
+// The import keeps them as rows; they are totals, not stages, so stage-level logic must skip them.
+export const isSummaryRow = (s: { stage: string | null }) => /^[\s ]*(to[\s ]+be[\s ]+billed|billable|billed[\s ]+till[\s ]+date|total)\b/i.test(s.stage ?? "");
+
 const OPEN_STATUS = new Set(["In progress", "Not started", "On hold"]);
 // Active = an open status, or no status recorded but still something to bill.
 export const isActive = (l: Line) => OPEN_STATUS.has(l.status ?? "") || (!l.status && (l.yet_to_bill_amount ?? 0) > 0);
@@ -49,7 +54,7 @@ export async function all<T>(sb: SupabaseClient, table: string, columns: string,
   }
 }
 
-export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null, project?: string | null, stageId?: number | null) {
+export async function loadDashboard(sb: SupabaseClient, studio?: string | null, client?: string | null, project?: string | null, stageId?: number | null, range?: Range | null) {
   const [lines, stages, open, invoices, payments, sos, decisions, events, runs, staff, cplan, cplanFallback] = await Promise.all([
     all<Line>(sb, "project_lines", "id,row_no,sl_no,financial_year,project_number,client_name,project_name,location,contract_validity,studio,project_type,start_date,end_date,escalation_clause,split_value,billed_pct,billed_amount,yet_to_bill_amount,design_value,construction_value,status,project_stage,spoc"),
     all<Stage>(sb, "v_stages", "id,project_number,studio,seq,sl_no,project_name,stage,pct,fee,billed_on,row_no,workflow_status,last_event_at,last_event_by"),
@@ -102,7 +107,7 @@ export async function loadDashboard(sb: SupabaseClient, studio?: string | null, 
   if (project) scoped = filterProject(scoped, project);
   if (studio) scoped = filterStudio(scoped, studio);
   if (stageId) scoped = filterStage(scoped, stageId);
-  return { ...build(scoped), studio: studio ?? null, allStudios, client: client ?? null, project: project ?? null, stage: stageId ?? null, clients };
+  return { ...build(scoped, range ?? null), studio: studio ?? null, allStudios, client: client ?? null, project: project ?? null, stage: stageId ?? null, clients };
 }
 
 // One client's slice. Zoho rows follow the project number on their sales order, invoice reference, or customer name.
@@ -290,12 +295,17 @@ export type Raw = {
   cplan?: { project_number: string; studio: string; start_month: string; months: number | null }[];
 };
 
-export function build(r: Raw) {
+export function build(r: Raw, range: Range | null = null) {
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()); // YYYY-MM-DD in IST
   const lastRun = r.runs.find((x) => x.ok) ?? null;
   // Report month: the latest month with billing in the tracker (the sheet lags the calendar).
   const billedMonths = r.stages.map((s) => s.billed_on).filter((d): d is string => !!d && d <= today).map((d) => d.slice(0, 7));
   const reportMonth = (lastRun?.report_month?.slice(0, 7)) ?? billedMonths.sort().at(-1) ?? today.slice(0, 7);
+  // Period for flow figures (billed, collected, invoices raised). No range picked = the report month, as before.
+  const custom = !!range;
+  const per: Range = range ?? { from: `${reportMonth}-01`, to: monthEnd(`${reportMonth}-01`) };
+  const prevPer = prevRange(per);
+  const inP = (d: string | null | undefined) => inRange(per, d);
 
   const active = r.lines.filter(isActive);
   const sum = <T,>(xs: T[], f: (x: T) => number | null | undefined) => xs.reduce((a, x) => a + (Number(f(x)) || 0), 0);
@@ -303,14 +313,16 @@ export function build(r: Raw) {
   const billedTotal = sum(active, (l) => l.billed_amount);
   const yetToBill = sum(active, (l) => l.yet_to_bill_amount);
   const designYtb = sum(active, (l) => l.design_value);
-  const billedMonth = sum(r.stages.filter((s) => s.billed_on?.startsWith(reportMonth)), (s) => s.fee);
+  const billedMonth = sum(r.stages.filter((s) => inP(s.billed_on)), (s) => s.fee);
   const prevMonth = (() => { const [y, m] = reportMonth.split("-").map(Number); return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7); })();
-  const billedPrevMonth = sum(r.stages.filter((s) => s.billed_on?.startsWith(prevMonth)), (s) => s.fee);
-  const monthPays = r.payments.filter((p) => p.date.startsWith(reportMonth));
+  const billedPrevMonth = sum(r.stages.filter((s) => inRange(prevPer, s.billed_on)), (s) => s.fee);
+  const monthPays = r.payments.filter((p) => inP(p.date));
   const collectedMonth = sum(monthPays, (p) => p.amount);
-  const outstanding = sum(r.open, (i) => i.balance);
-  const late = sum(r.open.filter((i) => i.days_overdue > 0), (i) => i.balance);
-  const old = r.open.filter((i) => i.bucket === "90+").sort((a, b) => b.days_overdue - a.days_overdue);
+  // With a range picked, receivables are the open invoices raised in it; otherwise every open invoice.
+  const openP = custom ? r.open.filter((i) => inP(i.date)) : r.open;
+  const outstanding = sum(openP, (i) => i.balance);
+  const late = sum(openP.filter((i) => i.days_overdue > 0), (i) => i.balance);
+  const old = openP.filter((i) => i.bucket === "90+").sort((a, b) => b.days_overdue - a.days_overdue);
   const lineKey = (pn: string, studio: string | null) => `${pn}|${studio ?? ""}`;
   const lineByKey = new Map(r.lines.map((l) => [lineKey(l.project_number, l.studio), l]));
   const label = (s: Stage) => lineByKey.get(lineKey(s.project_number, s.studio))?.client_name ?? s.project_name ?? s.project_number;
@@ -318,6 +330,7 @@ export function build(r: Raw) {
   // ---- stage pipeline (cards 1-3) ----
   const byStatus = (st: Stage["workflow_status"]) => r.stages.filter((s) => s.workflow_status === st).sort((a, b) => (b.fee ?? 0) - (a.fee ?? 0));
   const pipeline = (["complete", "client_approved", "finance_notified"] as const).map((st) => {
+    // Cards 1-3 are a live work queue: never date-filtered (imported stages carry no event date).
     const xs = byStatus(st).map((s) => ({ ...s, label: label(s) }));
     return { status: st, count: xs.length, value: sum(xs, (s) => s.fee), top: xs[0] ?? null, items: xs };
   });
@@ -377,7 +390,12 @@ export function build(r: Raw) {
 
   // ---- recent activity ----
   const dayAgo = new Date(Date.now() - 86400000).toISOString();
-  const since = {
+  const since = custom ? {
+    invoices: r.invoices.filter((i) => inP(i.date)).length,
+    stages: r.events.filter((e) => e.event === "complete" && inP(e.created_at)).length,
+    receipts: collectedMonth,
+    expiring: active.filter((l) => inP(l.end_date) && (l.yet_to_bill_amount ?? 0) > 0).length,
+  } : {
     invoices: r.invoices.filter((i) => i.date >= dayAgo.slice(0, 10)).length,
     stages: r.events.filter((e) => e.event === "complete" && e.created_at >= dayAgo).length,
     receipts: sum(r.payments.filter((p) => p.date >= dayAgo.slice(0, 10)), (p) => p.amount),
@@ -426,8 +444,9 @@ export function build(r: Raw) {
   return {
     today, reportMonth, lastRun, staffCount: r.staffCount, zohoIsSample: sourceIsMock,
     prevMonth,
-    kpi: { contract, billedTotal, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: r.open.length, activeLines: active.length },
-    open: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, queues,
+    period: { ...per, custom, label: custom ? presetLabel(per, today) : rangeLabel(per), prev: prevPer, prevLabel: rangeLabel(prevPer) },
+    kpi: { contract, billedTotal, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: openP.length, activeLines: active.length },
+    open: openP, openAll: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, queues,
     agents: {
       collection, contractWatch,
       invoiceTrigger,

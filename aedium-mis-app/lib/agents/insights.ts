@@ -24,7 +24,7 @@ const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 
 export function findings(d: Dash): Finding[] {
   const f: Finding[] = [];
-  const k = d.kpi, month = monthLabel(d.reportMonth), prev = monthLabel(d.prevMonth);
+  const k = d.kpi, month = d.period?.custom ? d.period.label : monthLabel(d.reportMonth), prev = d.period?.custom ? d.period.prevLabel : monthLabel(d.prevMonth);
   const src = d.zohoIsSample ? " (Zoho sample data)" : "";
 
   if (k.outstanding > 0) {

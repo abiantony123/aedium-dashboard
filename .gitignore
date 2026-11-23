@@ -1,0 +1,12 @@
+# Client source material (real data, confidential)
+files/
+Requirements/
+*.xlsx
+*.xls
+transcripts/Meeting [0-9]*
+
+# Dependencies and secrets
+node_modules/
+.env
+.env.*
+!.env.example

@@ -9,6 +9,10 @@ import { fyPlan, escalations, projection } from "@/lib/plan";
 import { financeQueue, notificationsFor } from "@/lib/finance";
 import { listPos } from "@/lib/po";
 import { checkCodeCompliance, searchEmailEvidence, type ComplianceItem, type EmailCitation } from "@/lib/compliance";
+import { inbox } from "@/lib/inbox";
+import { forecast, snapshot, backtest } from "@/lib/forecast";
+import { leakage } from "@/lib/leakage";
+import { parseRange } from "@/lib/period";
 import Dashboard from "./dashboard";
 import type { Run } from "./connect";
 
@@ -29,12 +33,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
   const client = q.client || null;
   const project = q.project || null;
   const stage = q.stage && /^\d+$/.test(q.stage) ? Number(q.stage) : null;
+  const range = parseRange(q.from, q.to);
   const month = /^\d{4}-\d{2}$/.test(q.month ?? "") ? q.month! : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date()).slice(0, 7);
   try {
-    const data = await loadDashboard(sb, studio, client, project, stage);
+    const data = await loadDashboard(sb, studio, client, project, stage, range);
     const errors: string[] = [];
     const see = (t: Parameters<typeof canSee>[1]) => canSee(user.role, t);
-    const [keys, runs, plan, esc, proj, queue, pos, notes, compliance, emailEvidence] = await Promise.all([
+    const [keys, runs, plan, esc, proj, queue, pos, notes, compliance, emailEvidence, box, fc, bt, leak] = await Promise.all([
       see("connect") ? safe(listKeys(), [] as KeyInfo[], errors, "Connect AI") : [],
       see("connect") || see("agents") ? safe(recentRuns(40) as Promise<Run[]>, [] as Run[], errors, "Call log") : [],
       see("plan") ? safe(fyPlan(sb, studio, client, project), null, errors, "Plan") : null,
@@ -45,12 +50,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       safe(notificationsFor(sb, user.role), [], errors, "Notifications"),
       see("agents") ? safe(checkCodeCompliance(sb, { studio, client, project_number: project ?? undefined, limit: 12 }), [] as ComplianceItem[], errors, "Code compliance") : [],
       see("agents") ? safe(searchEmailEvidence(sb, { studio, project_number: project ?? undefined, limit: 12 }), [] as EmailCitation[], errors, "Email evidence") : [],
+      see("agents") ? safe(inbox(sb), null, errors, "PO inbox") : null,
+      see("plan") ? safe(forecast(sb, studio).then(async (f) => { await snapshot(sb, f, user.email).catch(() => null); const { items, ...rest } = f; void items; return rest; }), null, errors, "Forecast") : null,
+      see("plan") ? safe(backtest(sb, studio), [], errors, "Backtest") : [],
+      see("cash") ? safe(leakage(sb, studio, user.email, range), null, errors, "Leakage") : null,
     ]);
     const setupError = errors.length ? `Some sections need the latest SQL migrations (supabase/migrations): ${errors.join(" · ")}` : null;
     const fs = findings(data);
     const ruleText = ruleNarrative(fs);
     if (!see("cash") && !see("finance")) {
-      data.open = []; data.old = []; data.pipeline = []; data.openStages = []; data.payments = [];
+      data.open = []; data.openAll = []; data.old = []; data.pipeline = []; data.openStages = []; data.payments = [];
     }
     if (!see("agents")) {
       data.queues = { collections: [], invoice_trigger: [], contract_watch: [] };
@@ -63,7 +72,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<Rec
       <Dashboard data={data} email={user.email} role={user.role} roleStudio={user.studio} tabs={tabsFor(user.role)} origin={origin}
         keys={keys} runs={runs} setupError={setupError} findings={fs} ruleText={ruleText}
         plan={plan} escalations={esc} projection={proj} month={month} financeQueue={queue} pos={pos} notifications={notes}
-        compliance={compliance} emailEvidence={emailEvidence} />
+        compliance={compliance} emailEvidence={emailEvidence}
+        inbox={box} forecast={fc} backtest={bt} leakage={leak} />
     );
   } catch (e) {
     return (
