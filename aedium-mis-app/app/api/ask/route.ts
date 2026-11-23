@@ -24,7 +24,11 @@ export async function POST(req: Request) {
   const READ_TOOLS = toolsFor("read", user.role);
   const TOOLS: Anthropic.Beta.BetaTool[] = READ_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: jsonSchema(t) }));
   const ctx = { sb, actor: { id: user.id, email: user.email, via: "ask", role: user.role, studio: user.studio } };
-  const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: `Today is ${new Date().toISOString().slice(0, 10)}.${studio ? ` The person is looking at studio "${studio}"; pass it as the studio filter where a tool takes one.` : ""}\n\nQuestion: ${question}` }];
+  // Earlier turns of this chat (text only, last 4) so follow-ups like "and last month?" make sense.
+  const history: Anthropic.Beta.BetaMessageParam[] = (Array.isArray(body.history) ? body.history : []).slice(-4)
+    .filter((h: unknown): h is { q: string; a: string } => !!h && typeof (h as { q?: unknown }).q === "string" && typeof (h as { a?: unknown }).a === "string")
+    .flatMap((h: { q: string; a: string }) => [{ role: "user" as const, content: h.q.slice(0, 600) }, { role: "assistant" as const, content: h.a.slice(0, 4000) }]);
+  const messages: Anthropic.Beta.BetaMessageParam[] = [...history, { role: "user", content: `Today is ${new Date().toISOString().slice(0, 10)}.${studio ? ` The person is looking at studio "${studio}"; pass it as the studio filter where a tool takes one.` : ""}\n\nQuestion: ${question}` }];
   const trace: string[] = [];
   try {
     for (let round = 0; round < 8; round++) {
