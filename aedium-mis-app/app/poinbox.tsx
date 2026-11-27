@@ -6,7 +6,7 @@ import { inr, niceDate, timeOf } from "@/lib/format";
 import { can, type Role } from "@/lib/rbac";
 import type { inbox as inboxFn } from "@/lib/inbox";
 import type { getPo } from "@/lib/po";
-import { loadPo, correctPoAction, approveInboxPo, notAPo, reviewPoAction, poFileUrl, searchPosAction, revisePoAction, suggestProjectNumber } from "./actions";
+import { loadPo, correctPoAction, approveInboxPo, notAPo, reviewPoAction, poFileUrl, searchPosAction, revisePoAction, suggestProjectNumber, decideReviewNoteAction } from "./actions";
 
 type Box = Awaited<ReturnType<typeof inboxFn>>;
 type Item = Box["items"][number];
@@ -234,6 +234,26 @@ function Selected({ item, full, loading, role, run, pending, toast, editing, set
 
       <h3 className="f1-sec">Checks</h3>
       {item.checks.map((c, i) => <div key={i} className={`f1-check${c.ok ? "" : c.severity === "error" ? " hard" : " soft"}`}><span>{c.ok ? "✓" : c.severity === "error" ? "✕" : "!"}</span><div><b>{c.rule}</b><small>{c.detail}</small></div></div>)}
+
+      {item.notes.length > 0 && <>
+        <h3 className="f1-sec">Suggested fixes <span className="note">from the PO intake agent · nothing is changed until you edit the fields</span></h3>
+        {item.notes.map((n) => (
+          <div key={n.id} className={`f1-check${n.status === "open" ? " soft" : ""}`}>
+            <span>{n.status === "applied" ? "✓" : n.status === "dismissed" ? "–" : "→"}</span>
+            <div>
+              <b>{n.suggestion}</b>
+              <small>{n.check_rule}{n.proposed_value ? ` · use: ${n.proposed_value}` : ""}</small>
+              <small>Evidence: {n.evidence}</small>
+              {n.status === "open" && can(role, "po.review") && po.status === "pending_review" ? (
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button className="pill" disabled={pending} onClick={() => { setEditing(true); run(decideReviewNoteAction({ id: n.id, decision: "applied" })); }}>Apply (edit fields)</button>
+                  <button className="pill" disabled={pending} onClick={() => run(decideReviewNoteAction({ id: n.id, decision: "dismissed" }))}>Dismiss</button>
+                </div>
+              ) : n.status !== "open" && <small>{n.status === "applied" ? "Applied" : "Dismissed"}</small>}
+            </div>
+          </div>
+        ))}
+      </>}
 
       {full && <>
         <h3 className="f1-sec">Studio split and stages {loading && <span className="note">loading…</span>}</h3>

@@ -12,6 +12,7 @@ import { fyPlan, escalations, projection, addProjection, setTarget, setConstruct
 import { financeQueue, raiseInvoice, recordPayment } from "../finance";
 import { checkCodeCompliance, decideCodeCompliance, searchEmailEvidence, logProjectEmail } from "../compliance";
 import { recentRuns } from "./keys";
+import { poEmailsSeen, logPoEmail, addReviewNote } from "../inbox";
 
 export type ToolCtx = { sb: Db; actor: Actor };
 export type Scope = "read" | "act";
@@ -239,6 +240,33 @@ export const TOOLS = [
     description: "Submit the fields you extracted from a PO. The server checks the numbers (split vs total, stage % = 100%, fees vs %), detects amendments of an existing PO number and returns the check results. Nothing reaches the tracker until a reviewer approves it.",
     input: PoInput,
     run: async ({ sb, actor }, input) => stagePo(sb, actor, input),
+  }),
+  // ---------- Mailbox PO intake (an assistant reading Outlook with its own Microsoft 365 connector) ----------
+  tool({
+    name: "po_emails_seen", title: "Which PO emails were already handled", scope: "read", need: ["po.stage"],
+    description: "Pass the Outlook message ids you found. Returns the ones already handled (with their decision) and the ones that are new. Only process the new ones, so a re-run never handles an email twice.",
+    input: { message_ids: z.array(z.string().min(1).max(500)).min(1).max(100) },
+    run: async ({ sb }, { message_ids }) => poEmailsSeen(sb, message_ids),
+  }),
+  tool({
+    name: "log_po_email", title: "Record the decision on one email", scope: "act", need: ["po.stage"],
+    description: "Call once per email you handled. decision: po or amendment (pass the po_id stage_po returned, and the project you matched it to), not_po (quotation, RFQ, invoice, correspondence), parked (NDA client, unclear, or anything a person should look at), po_not_found (the email mentions a PO but no PO is attached anywhere in the thread). reason: one sentence a reviewer can check.",
+    input: {
+      message_id: z.string().min(1).max(500), subject: z.string().max(300).optional(), sender: z.string().max(200).optional(),
+      received_at: z.string().optional().describe("ISO date-time the email arrived"), mailbox: z.string().max(120).optional(), attachment_name: z.string().max(200).optional(),
+      decision: z.enum(["po", "amendment", "not_po", "parked", "po_not_found"]), reason: z.string().min(3).max(500),
+      po_id: z.number().int().optional(), matched_project_number: z.string().max(40).optional().describe("Tracker project number the PO belongs to, when you matched one (R-YYYY-NNN)"),
+    },
+    run: async ({ sb, actor }, input) => logPoEmail(sb, actor, input),
+  }),
+  tool({
+    name: "add_review_note", title: "Suggest a fix for a failed check", scope: "act", need: ["po.stage"],
+    description: "For a staged PO whose checks failed or warned: write what is likely wrong and the fix, with evidence (PDF page, an earlier PO of this client, the tracker's studio list). Does NOT change the PO; the reviewer applies or dismisses the suggestion. One note per failed check.",
+    input: {
+      po_id: z.number().int(), check: z.string().min(3).max(300).describe("The check's rule text, as returned by stage_po"),
+      suggestion: z.string().min(5).max(1000), evidence: z.string().min(5).max(1000), proposed_value: z.string().max(500).optional(),
+    },
+    run: async ({ sb, actor }, input) => addReviewNote(sb, actor, input),
   }),
   tool({
     name: "list_pos", title: "List staged and approved POs", scope: "read",

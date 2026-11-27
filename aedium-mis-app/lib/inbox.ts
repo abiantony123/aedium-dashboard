@@ -53,7 +53,8 @@ export async function inbox(sb: Db) {
   // POs staged with no inbox row (an assistant, or "edit as new version") still show up while they wait for review.
   const linked = new Set(items.map((i) => i.po_id).filter(Boolean));
   const orphans = poRows.filter((p) => !linked.has(p.id) && p.status === "pending_review").map((p) => toItem(null, p, fieldsBy.get(p.id) ?? []));
-  const all = [...items, ...orphans].sort((a, b) => b.detected_at.localeCompare(a.detected_at));
+  const notesBy = await notesFor(sb, [...items, ...orphans].map((i) => i.po_id).filter((x): x is number => !!x));
+  const all = [...items, ...orphans].map((i) => ({ ...i, notes: notesBy.get(i.po_id ?? -1) ?? [] })).sort((a, b) => b.detected_at.localeCompare(a.detected_at));
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString(), today = new Date().toISOString().slice(0, 10);
   const merged = all.filter((i) => i.merged_at);
   const hours = merged.filter((i) => i.received_at).map((i) => (Date.parse(i.merged_at!) - Date.parse(i.received_at!)) / 3600000).sort((a, b) => a - b);
@@ -187,6 +188,72 @@ export async function nextProjectNumber(sb: Db, poDate?: string | null) {
   return `R-${code}-${String(seq + 1).padStart(3, "0")}`;
 }
 
+// ---------- Mailbox agent (Cowork or Managed Agent reading Outlook through its own connector) ----------
+export type ReviewNote = { id: number; po_id: number; check_rule: string; suggestion: string; evidence: string; proposed_value: string | null; status: string; created_by: string | null; created_at: string };
+
+// Which of these Outlook message ids were already handled, so a re-run never processes an email twice (R23).
+export async function poEmailsSeen(sb: Db, ids: string[]) {
+  const list = [...new Set(ids.map((s) => s.trim()).filter(Boolean))].slice(0, 100);
+  if (!list.length) return { seen: [], new: [] };
+  const { data, error } = await sb.from("po_inbox").select("message_id,classification,status,po_id,skip_reason").eq("source", "mailbox").in("message_id", list);
+  if (error) throw new Error(error.message);
+  const seen = data ?? [];
+  const got = new Set(seen.map((r) => r.message_id));
+  return { seen, new: list.filter((m) => !got.has(m)) };
+}
+
+// Record the agent's decision on one email: a PO it staged, or why it was not one / was parked for a person.
+export async function logPoEmail(sb: Db, actor: Actor, e: {
+  message_id: string; subject?: string; sender?: string; received_at?: string; mailbox?: string; attachment_name?: string;
+  decision: "po" | "amendment" | "not_po" | "parked" | "po_not_found"; reason: string; po_id?: number; matched_project_number?: string;
+}) {
+  const reg = await registerDocument(sb, actor, { source: "mailbox", message_id: e.message_id, subject: e.subject?.slice(0, 300), sender: e.sender?.slice(0, 200), received_at: e.received_at, mailbox: e.mailbox?.slice(0, 120), attachment_name: e.attachment_name?.slice(0, 200) });
+  if (e.po_id) {
+    const l = await linkStaged(sb, reg.id, e.po_id, []);
+    const patch: Record<string, unknown> = { skip_reason: null };
+    if (e.matched_project_number) patch.matched_project_number = e.matched_project_number.toUpperCase().replace(/\s/g, "");
+    await sb.from("po_inbox").update(patch).eq("id", reg.id);
+    return { inbox_id: reg.id, existed: reg.existed, classification: l.classification, status: "staged" };
+  }
+  const notPo = e.decision === "not_po";
+  const { error } = await sb.from("po_inbox").update({
+    classification: notPo ? "not_po" : "unknown", status: notPo ? "skipped" : "detected",
+    skip_reason: `${notPo ? "Not a PO" : e.decision === "po_not_found" ? "PO referenced but not found in the thread" : "Parked for a person"}: ${e.reason}`.slice(0, 500),
+  }).eq("id", reg.id);
+  if (error) throw new Error(error.message);
+  return { inbox_id: reg.id, existed: reg.existed, classification: notPo ? "not_po" : "unknown", status: notPo ? "skipped" : "detected" };
+}
+
+// A suggested fix for a failed check. Stored beside the PO; the PO itself is not changed.
+export async function addReviewNote(sb: Db, actor: Actor, n: { po_id: number; check: string; suggestion: string; evidence: string; proposed_value?: string }) {
+  assertCan(actor.role, "po.stage");
+  const { data: po } = await sb.from("purchase_orders").select("id,po_number,status").eq("id", n.po_id).maybeSingle();
+  if (!po) throw new Error(`No PO with id ${n.po_id}.`);
+  if (po.status !== "pending_review") throw new Error(`PO ${po.po_number} is ${po.status}; notes go on POs waiting for review.`);
+  const { data, error } = await sb.from("po_review_notes").insert({
+    po_id: n.po_id, check_rule: n.check.slice(0, 300), suggestion: n.suggestion.slice(0, 1000), evidence: n.evidence.slice(0, 1000),
+    proposed_value: n.proposed_value?.slice(0, 500) ?? null, created_by: who(actor),
+  }).select("id").single();
+  if (error) throw new Error(/po_review_notes/.test(error.message) ? "Review notes are not set up: run supabase/migrations/20261123000000_po_review_notes.sql." : error.message);
+  return { note_id: data.id, po_id: n.po_id, po_number: po.po_number, next_step: "The reviewer sees this suggestion under the PO in Agents › PO intake and applies or dismisses it." };
+}
+
+// Reviewer marks a suggestion applied or dismissed (applying the change itself is done with "Edit fields").
+export async function decideReviewNote(sb: Db, actor: Actor, id: number, decision: "applied" | "dismissed") {
+  assertCan(actor.role, "po.review");
+  const { error } = await sb.from("po_review_notes").update({ status: decision, decided_by: who(actor), decided_at: new Date().toISOString() }).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+async function notesFor(sb: Db, poIds: number[]) {
+  const by = new Map<number, ReviewNote[]>();
+  if (!poIds.length) return by;
+  const { data, error } = await sb.from("po_review_notes").select("*").in("po_id", poIds).order("id");
+  if (error) return by;   // table not created yet: the screen still works without notes
+  for (const n of (data ?? []) as ReviewNote[]) by.set(n.po_id, [...(by.get(n.po_id) ?? []), n]);
+  return by;
+}
+
 // Search every PO already in the table (any status) by PO number, client, project or project number.
 export async function searchPos(sb: Db, q: string, status?: string) {
   const term = q.trim().replace(/[%,()]/g, " ").slice(0, 80);
@@ -205,7 +272,8 @@ export async function searchPos(sb: Db, q: string, status?: string) {
   const rowBy = new Map(((rows.data ?? []) as InboxRow[]).map((r) => [r.po_id, r]));
   const fieldsBy = new Map<number, FieldRow[]>();
   for (const f of (fields.data ?? []) as FieldRow[]) fieldsBy.set(f.po_id, [...(fieldsBy.get(f.po_id) ?? []), f]);
-  return pos.map((p) => toItem(rowBy.get(p.id) ?? null, p, fieldsBy.get(p.id) ?? []));
+  const notesBy = await notesFor(sb, ids);
+  return pos.map((p) => ({ ...toItem(rowBy.get(p.id) ?? null, p, fieldsBy.get(p.id) ?? []), notes: notesBy.get(p.id) ?? [] }));
 }
 
 // Edit an approved or rejected PO: stage a new version from its current values so it can be corrected and approved

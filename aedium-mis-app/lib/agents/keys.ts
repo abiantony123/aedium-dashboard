@@ -25,7 +25,7 @@ export function agentForTool(tool: string, input?: unknown): string {
       email_evidence: "Email evidence agent",
     }[String(o.agent ?? "")] ?? "Collections agent";
   }
-  if (["stage_po", "review_po", "get_po_schema", "list_pos", "get_po", "tracker_rows_for_excel", "sample_po"].includes(tool)) return "PO intake agent";
+  if (["stage_po", "review_po", "get_po_schema", "po_emails_seen", "log_po_email", "add_review_note", "list_pos", "get_po", "tracker_rows_for_excel", "sample_po"].includes(tool)) return "PO intake agent";
   if (["mark_stage", "project_stages"].includes(tool)) return "Invoice trigger agent";
   if (["raise_invoice", "record_payment", "finance_queue", "open_invoices", "payments"].includes(tool)) return "Finance agent";
   if (["fy_plan", "set_fy_target", "set_construction_schedule", "monthly_projection", "add_projection", "delete_projection", "autofill_projection"].includes(tool)) return "Planning agent";

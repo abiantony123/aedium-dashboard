@@ -8,7 +8,7 @@ import { runTool, toolsFor, type Scope } from "@/lib/agents/tools";
 import { assertCan, isRole } from "@/lib/rbac";
 import { reviewPo, getPo, excelRows, stagePo } from "@/lib/po";
 import { setTarget, addProjection, deleteProjection, autofillProjection, setConstruction, escalationDraft, decideEscalation } from "@/lib/plan";
-import { correctPo, approveFromInbox, skipDocument, searchPos, revisePo, nextProjectNumber } from "@/lib/inbox";
+import { correctPo, approveFromInbox, skipDocument, searchPos, revisePo, nextProjectNumber, decideReviewNote } from "@/lib/inbox";
 import { forecast } from "@/lib/forecast";
 import { decideLeakage, refreshLeakage } from "@/lib/leakage";
 import { raiseInvoice as raiseInv, recordPayment as recordPay, markNotificationsRead } from "@/lib/finance";
@@ -169,6 +169,9 @@ export async function suggestProjectNumber(poDate: string | null) {
 }
 export async function notAPo(input: { inbox_id: number; reason: string }): Promise<Result> {
   try { const { sb, actor } = await me(); await skipDocument(sb, actor, input.inbox_id, input.reason || "Not a purchase order"); return done("Moved to Activity as not a PO"); } catch (e) { return fail(e); }
+}
+export async function decideReviewNoteAction(input: { id: number; decision: "applied" | "dismissed" }): Promise<Result> {
+  try { const { sb, actor } = await me(); await decideReviewNote(sb, actor, input.id, input.decision); return done(input.decision === "applied" ? "Suggestion marked as applied" : "Suggestion dismissed"); } catch (e) { return fail(e); }
 }
 export async function poFileUrl(inboxId: number) {
   try {
