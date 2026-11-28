@@ -450,6 +450,25 @@ export function build(r: Raw, range: Range | null = null) {
   });
   const lastPay = [...monthPays].sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
 
+  // ---- detail behind each activity-card number (hover popovers); same filters as `since` ----
+  const inWinDate = (dt: string | null | undefined) => custom ? inP(dt) : !!dt && dt >= yday;
+  const lineName = (pn: string, studio: string | null) => { const l = lineByKey.get(lineKey(pn, studio)); return l?.client_name ?? l?.project_name ?? pn; };
+  const CAP = 25;
+  const sinceItems = {
+    invoices: r.invoices.filter((i) => inWinDate(i.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, CAP)
+      .map((i) => ({ number: i.invoice_number, project: invoiceProject.get(i.invoice_id) ?? i.reference_number ?? null, date: i.date, total: Number(i.total) || 0, balance: Number(i.balance) || 0 })),
+    stages: r.events.filter((e) => e.event === "complete" && (custom ? inP(e.created_at) : e.created_at >= dayAgo)).slice(0, CAP)
+      .map((e) => ({ project: lineName(e.project_number, e.studio), studio: e.studio, seq: e.seq, at: e.created_at, by: e.actor_email })),
+    uninvoiced: queues.invoice_trigger.slice(0, CAP).map((s) => ({ project: s.label, studio: s.studio, stage: s.stage, fee: s.fee ?? 0 })),
+    receipts: payments.filter((p) => inWinDate(p.date)).slice(0, CAP)
+      .map((p) => ({ number: p.payment_number, invoice: p.invoice_number, project: p.project, date: p.date, amount: Number(p.amount) || 0 })),
+    contracts: (custom ? active.filter((l) => inP(l.end_date) && (l.yet_to_bill_amount ?? 0) > 0).map((l) => ({ ...l, days: daysBetween(today, l.end_date!) })) : expiring.filter((l) => l.days >= 0))
+      .sort((a, b) => (a.end_date ?? "").localeCompare(b.end_date ?? "")).slice(0, CAP)
+      .map((l) => ({ project: l.client_name ?? l.project_name ?? l.project_number, studio: l.studio, end: l.end_date, days: l.days, ytb: l.yet_to_bill_amount ?? 0 })),
+    lapsed: custom ? [] : expiring.filter((l) => l.days < 0).sort((a, b) => b.days - a.days).slice(0, CAP)
+      .map((l) => ({ project: l.client_name ?? l.project_name ?? l.project_number, studio: l.studio, end: l.end_date, days: l.days, ytb: l.yet_to_bill_amount ?? 0 })),
+  };
+
   const timeline = [...active].sort((a, b) => (b.split_value ?? 0) - (a.split_value ?? 0)).slice(0, 6);
   const sourceIsMock = lastRun?.counts?.zoho_source !== "zoho";
 
@@ -458,7 +477,7 @@ export function build(r: Raw, range: Range | null = null) {
     prevMonth,
     period: { ...per, custom, label: custom ? presetLabel(per, today) : rangeLabel(per), prev: prevPer, prevLabel: rangeLabel(prevPer) },
     kpi: { contract, billedTotal, yetToBill, designYtb, billedMonth, billedPrevMonth, collectedMonth, outstanding, late, openCount: openP.length, activeLines: active.length },
-    open: openP, openAll: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, queues,
+    open: openP, openAll: r.open, old, payments, pipeline, expiring, mismatches, studios, months, committed, since, sinceItems, queues,
     agents: {
       collection, contractWatch,
       invoiceTrigger,

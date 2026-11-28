@@ -28,6 +28,28 @@ import Bell from "./bell";
 
 type Tab = TabName;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+// One activity-card row with a details popover: opens on hover or keyboard focus, Esc closes, max 5 items + "N more".
+type SinceItem = { k: string; main: string; meta: string; amt?: string };
+function SinceRow({ id, label, value, count, title, sub, items, empty }: { id: string; label: string; value: React.ReactNode; count: number; title: string; sub: string; items: SinceItem[]; empty: string }) {
+  const [open, setOpen] = useState(false);
+  const shown = items.slice(0, 5), more = count - shown.length;
+  return (
+    <div className={`srow has-pop${open ? " open" : ""}`} tabIndex={0} aria-describedby={id}
+      onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+      onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
+      <span>{label}</span><span className="vchip">{value}</span>
+      <div className="spop" role="tooltip" id={id} hidden={!open}>
+        <div className="spop-h"><b>{title}</b><span>{sub}</span></div>
+        {shown.length ? (
+          <ul>{shown.map((x) => (
+            <li key={x.k}><div><div className="spop-main">{x.main}</div><div className="spop-meta">{x.meta}</div></div>{x.amt && <span className="spop-amt num">{x.amt}</span>}</li>
+          ))}</ul>
+        ) : <p className="spop-empty">{empty}</p>}
+        {more > 0 && <div className="spop-f">+ {more} more</div>}
+      </div>
+    </div>
+  );
+}
 const shortDay = (iso: string | null) => iso ? new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" }) : "none yet";
 
 type Draft = { to: string; subject: string; body: string };
@@ -646,12 +668,31 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
           <section className="card since">
             <h2>{d.period.custom ? "In this period" : "Since yesterday"}</h2>
             <div className="rows">
-              <div className="srow"><span>Invoices raised</span><span className="vchip">{d.since.invoices}</span></div>
-              <div className="srow"><span>Stages marked complete</span><span className="vchip">{d.since.stages}</span></div>
-              <div className="srow" title="Live queue, not date-filtered: tracker stages marked Completed that have no invoice yet (same as the AI brief)"><span>Completed, not invoiced</span><span className="vchip">{d.queues.invoice_trigger.length}{d.queues.invoice_trigger.length ? ` · ${inr(d.queues.invoice_trigger.reduce((a, s) => a + (s.fee ?? 0), 0))}` : ""}</span></div>
-              <div className="srow"><span>Receipts recorded</span><span className="vchip">{inr(d.since.receipts)}</span></div>
-              <div className="srow"><span>{d.period.custom ? "Contracts ending" : "Contracts ending in 60 days"}</span><span className="vchip">{d.since.expiring}</span></div>
-              {!d.period.custom && <div className="srow"><span>Contracts lapsed, still unbilled</span><span className="vchip">{d.since.lapsed}</span></div>}
+              {(() => {
+                const si = d.sinceItems;
+                const win = d.period.custom ? d.period.label : "since yesterday";
+                const uninvTotal = d.queues.invoice_trigger.reduce((a, s) => a + (s.fee ?? 0), 0);
+                return <>
+                  <SinceRow id="sp-inv" label="Invoices raised" value={d.since.invoices} count={d.since.invoices}
+                    title="Invoices raised" sub={`Zoho Books · ${win}`} empty={`No invoices ${win}. Last one ${shortDay(d.since.last.invoice)}.`}
+                    items={si.invoices.map((i) => ({ k: i.number, main: i.project ?? i.number, meta: `${i.number} · ${shortDay(i.date)} · ${i.balance > 0 ? `${inr(i.balance)} open` : "paid"}`, amt: inr(i.total) }))} />
+                  <SinceRow id="sp-stg" label="Stages marked complete" value={d.since.stages} count={d.since.stages}
+                    title="Stages marked complete" sub={`In the MIS · ${win}`} empty={`No stage was marked complete in the MIS ${win}. Tracker completions show in the next row.`}
+                    items={si.stages.map((s, i) => ({ k: `${s.project}-${s.seq}-${i}`, main: s.project, meta: `${s.studio ?? "—"} · stage ${s.seq} · ${shortDay(s.at)}${s.by ? ` · ${s.by.split("@")[0]}` : ""}` }))} />
+                  <SinceRow id="sp-uninv" label="Completed, not invoiced" value={`${d.queues.invoice_trigger.length}${d.queues.invoice_trigger.length ? ` · ${inr(uninvTotal)}` : ""}`} count={d.queues.invoice_trigger.length}
+                    title="Completed, not invoiced" sub="Live queue · not date-filtered · same as the AI brief" empty="Every completed stage has an invoice."
+                    items={si.uninvoiced.map((s, i) => ({ k: `${s.project}-${i}`, main: s.project, meta: `${s.studio ?? "—"} · ${s.stage ?? "stage"}`, amt: inr(s.fee) }))} />
+                  <SinceRow id="sp-rcpt" label="Receipts recorded" value={inr(d.since.receipts)} count={si.receipts.length}
+                    title="Receipts recorded" sub={`Zoho Books · ${win}`} empty={`No receipts ${win}. Last one ${shortDay(d.since.last.receipt)}.`}
+                    items={si.receipts.map((p, i) => ({ k: p.number ?? String(i), main: p.project ?? "Unlinked payment", meta: `${p.number ?? "Payment"}${p.invoice ? ` → ${p.invoice}` : ""} · ${shortDay(p.date)}`, amt: inr(p.amount) }))} />
+                  <SinceRow id="sp-end" label={d.period.custom ? "Contracts ending" : "Contracts ending in 60 days"} value={d.since.expiring} count={d.since.expiring}
+                    title={d.period.custom ? "Contracts ending in this period" : "Contracts ending in 60 days"} sub="Active lines with fee left to bill" empty="No contract with fee left to bill ends in this window."
+                    items={si.contracts.map((l, i) => ({ k: `${l.project}-${i}`, main: l.project, meta: `${l.studio ?? "—"} · ends ${shortDay(l.end)}${l.days >= 0 ? ` (in ${plural(l.days, "day")})` : ""}`, amt: `${inr(l.ytb)} left` }))} />
+                  {!d.period.custom && <SinceRow id="sp-lapsed" label="Contracts lapsed, still unbilled" value={d.since.lapsed} count={d.since.lapsed}
+                    title="Contracts lapsed, still unbilled" sub="Ended in the last 6 months · escalation may apply" empty="No lapsed contracts with fee left to bill."
+                    items={si.lapsed.map((l, i) => ({ k: `${l.project}-${i}`, main: l.project, meta: `${l.studio ?? "—"} · ended ${shortDay(l.end)} (${plural(-l.days, "day")} ago)`, amt: `${inr(l.ytb)} left` }))} />}
+                </>;
+              })()}
             </div>
             {!d.period.custom && (
               <div className="src">Last invoice {shortDay(d.since.last.invoice)} · last receipt {shortDay(d.since.last.receipt)} · last stage completed {shortDay(d.since.last.stage)}</div>
