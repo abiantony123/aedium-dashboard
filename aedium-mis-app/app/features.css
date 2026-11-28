@@ -472,6 +472,13 @@ h3{font-size:18px;font-weight:400;margin:0}
 .cp-foot{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:10px;font-size:12.5px;color:var(--muted)}
 .cp-act{background:none;border:0;padding:0;font:inherit;font-size:12.5px;color:var(--pink-text);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 .cp-foot .qtrace,.cp-body .qtrace{margin-top:8px}
+/* cited documents under an answer (knowledge base) */
+.cp-src{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.cp-src button{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:5px 11px 5px 6px;border-radius:999px;border:1px solid var(--raised);background:var(--bg);color:var(--fg);font:inherit;font-size:12.5px;cursor:pointer;text-align:left}
+.cp-src button:hover{border-color:var(--border);background:var(--hover)}
+.cp-src b{display:inline-grid;place-items:center;min-width:19px;height:19px;border-radius:999px;background:var(--raised);font-size:11px;font-weight:600}
+.cp-srcmsg{margin:6px 0 0;font-size:12.5px;color:var(--muted)}
+.cp-mode{height:34px;border-radius:999px;border:1px solid var(--raised);background:var(--bg);color:var(--fg);font:inherit;font-size:13px;padding:0 10px;cursor:pointer}
 .cp-sugg{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
 .cp-sugg button{display:flex;flex-direction:column;gap:4px;text-align:left;padding:13px 15px;border-radius:16px;border:1px solid var(--raised);background:var(--bg);color:var(--fg);font:inherit;font-size:14.5px;line-height:1.35;cursor:pointer;transition:background .15s,border-color .15s}
 .cp-sugg button:hover{background:var(--hover);border-color:var(--border)}

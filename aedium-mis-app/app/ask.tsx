@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dash } from "@/lib/data";
 import { greeting } from "@/lib/format";
+import { kbSourceUrl } from "./actions";
 
 const SUGGEST: { tag: string; q: string }[] = [
   { tag: "Overdue", q: "Which invoices are more than 90 days overdue?" },
@@ -13,9 +14,13 @@ const SUGGEST: { tag: string; q: string }[] = [
   { tag: "Billing", q: "What is billable in the next 90 days?" },
   { tag: "Studios", q: "Which studio has the most left to bill?" },
   { tag: "Trend", q: "How much did we bill each month this year?" },
+  { tag: "PO terms", q: "Which approved POs have an escalation clause, and at what rate?" },
+  { tag: "Amendments", q: "What changed in the latest PO amendment?" },
 ];
 
-type Turn = { id: number; q: string; a: string | null; trace: string[]; error?: boolean };
+type Source = { n: number; document_id: number; label: string; cited: string };
+type Turn = { id: number; q: string; a: string | null; trace: string[]; sources?: Source[]; error?: boolean };
+const MODE_LABEL: Record<string, string> = { legal: "Legal", finance: "Finance", project: "Project" };
 
 // `starter` / `starterSource` are still passed by the dashboard; the copilot no longer shows a starter message.
 export default function Ask({ d, studioPick }: { d: Dash & { studio: string | null }; studioPick: React.ReactNode; starter?: string; starterSource?: "llm" | "rules" }) {
@@ -28,6 +33,17 @@ export default function Ask({ d, studioPick }: { d: Dash & { studio: string | nu
   const endRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLTextAreaElement>(null);
 
+  // Document departments this role may search (Legal / Finance / Project); empty = no document search.
+  const [depts, setDepts] = useState<string[]>([]);
+  const [mode, setMode] = useState("all");
+  const [srcMsg, setSrcMsg] = useState<string | null>(null);
+  useEffect(() => { fetch("/api/ask").then((r) => r.json()).then((j) => setDepts(Array.isArray(j.departments) ? j.departments : [])).catch(() => setDepts([])); }, []);
+  const openSource = async (s: Source) => {
+    setSrcMsg(null);
+    const r = await kbSourceUrl(s.document_id);
+    if (r.ok) window.open(r.url, "_blank", "noopener"); else setSrcMsg(r.message);
+  };
+
   useEffect(() => { if (turns.length) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [turns]);
   useEffect(() => { const b = boxRef.current; if (b) { b.style.height = "auto"; b.style.height = `${Math.min(b.scrollHeight, empty ? 220 : 160)}px`; } }, [q, empty]);
 
@@ -38,9 +54,9 @@ export default function Ask({ d, studioPick }: { d: Dash & { studio: string | nu
     setTurns((p) => [...p, { id, q: t, a: null, trace: [] }]); setQ("");
     const done = (patch: Partial<Turn>) => setTurns((p) => p.map((x) => (x.id === id ? { ...x, ...patch } : x)));
     try {
-      const r = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: t, studio: d.studio, history }) });
+      const r = await fetch("/api/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: t, studio: d.studio, history, mode: mode === "all" ? null : mode }) });
       const j = await r.json();
-      done({ a: j.answer ?? j.error ?? "No answer came back.", trace: j.trace ?? [], error: !j.answer });
+      done({ a: j.answer ?? j.error ?? "No answer came back.", trace: j.trace ?? [], sources: Array.isArray(j.sources) ? j.sources : [], error: !j.answer });
     } catch { done({ a: "The request did not reach the server. Check your connection and try again.", error: true }); }
   }
 
@@ -52,6 +68,12 @@ export default function Ask({ d, studioPick }: { d: Dash & { studio: string | nu
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(q); } }}
         placeholder={empty ? "Ask anything about projects, invoices, studios, contracts or billing…" : "Ask a follow-up…"} />
       <div className="cp-tools">
+        {depts.length > 0 && (
+          <select id="askMode" className="cp-mode" aria-label="Documents to search" value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="all">All documents</option>
+            {depts.map((x) => <option key={x} value={x}>{MODE_LABEL[x] ?? x}</option>)}
+          </select>
+        )}
         {studioPick}
         <button className="cp-send" disabled={busy || !q.trim()} aria-label="Send">{busy ? "…" : "↑"}</button>
       </div>
@@ -88,6 +110,14 @@ export default function Ask({ d, studioPick }: { d: Dash & { studio: string | nu
                     ) : (
                       <>
                         <div className={`cp-text${t.error ? " err" : ""}`}>{t.a}</div>
+                        {!!t.sources?.length && (
+                          <ol className="cp-src" aria-label="Cited documents">
+                            {t.sources.map((s) => (
+                              <li key={s.n}><button type="button" title={s.cited} onClick={() => openSource(s)}><b>{s.n}</b>{s.label}</button></li>
+                            ))}
+                          </ol>
+                        )}
+                        {srcMsg && !!t.sources?.length && <p className="cp-srcmsg">{srcMsg}</p>}
                         {!t.error && (
                           <div className="cp-foot">
                             <span>{t.trace.length ? `${t.trace.length} lookup${t.trace.length > 1 ? "s" : ""} in Supabase` : "No data lookup: check before relying on it"}</span>

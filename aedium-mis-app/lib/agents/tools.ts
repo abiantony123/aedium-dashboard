@@ -13,6 +13,7 @@ import { financeQueue, raiseInvoice, recordPayment } from "../finance";
 import { checkCodeCompliance, decideCodeCompliance, searchEmailEvidence, logProjectEmail } from "../compliance";
 import { recentRuns } from "./keys";
 import { poEmailsSeen, logPoEmail, addReviewNote } from "../inbox";
+import { searchDocuments, hitLabel } from "../kb";
 
 export type ToolCtx = { sb: Db; actor: Actor };
 export type Scope = "read" | "act";
@@ -345,6 +346,21 @@ export const TOOLS = [
     description: "Search client approval emails, PO threads and billing correspondence indexed by project number, studio or keyword.",
     input: { query: z.string().optional(), project_number: z.string().optional(), studio, limit: z.number().int().min(1).max(30).optional() },
     run: async ({ sb, actor }, { query, project_number, studio, limit }) => searchEmailEvidence(sb, { query, project_number, studio: scoped(actor, studio), limit }),
+  }),
+  tool({
+    name: "search_documents", title: "Search approved PO documents", scope: "read",
+    description: "Search the text of approved and amended purchase orders / work orders (the knowledge base) for clauses and terms: payment stages as worded, escalation, validity, scope, GST, retention, what an amendment changed. Returns numbered passages with title, PO number, version and page. Use it for wording and terms; take money totals, billed and unbilled amounts from the tracker tools instead. Results are limited to the departments the caller's role may read; superseded PO versions are excluded unless include_superseded is true.",
+    input: {
+      query: z.string().min(3).max(300).describe("What to look for, in plain words, e.g. 'escalation clause Northwind'"),
+      project_number: z.string().optional().describe("Limit to one internal project number, e.g. R-2627-007"),
+      include_superseded: z.boolean().optional().describe("Also search older versions of amended POs"),
+      limit: z.number().int().min(1).max(12).optional(),
+    },
+    run: async ({ sb, actor }, input) => {
+      const r = await searchDocuments(sb, { role: actor.role, studio: actor.studio ?? null }, input);
+      return { mode: r.mode, departments: r.departments, ...("note" in r ? { note: r.note } : {}),
+        results: r.results.map((h) => ({ n: h.n, source: hitLabel(h), po_number: h.po_number, version: h.version, current: h.is_current, project_number: h.project_number, section: h.heading, text: h.content })) };
+    },
   }),
   tool({
     name: "log_project_email", title: "Log a client email onto a project thread", scope: "act", need: ["data.read"],

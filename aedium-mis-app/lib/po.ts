@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { Db } from "./supabase/server";
 import { assertCan } from "./rbac";
 import { notify, who, type Actor } from "./agents/actions";
+import { indexPoLater } from "./kb-index";
 
 const num = z.number().finite();
 export const PoInput = {
@@ -190,6 +191,7 @@ export async function reviewPo(sb: Db, actor: Actor, id: number, decision: "appr
     }
   }
   await sb.from("purchase_orders").update({ status: "approved", project_number: pn, reviewed_by: who(actor), reviewed_at: new Date().toISOString(), review_note: note ?? null }).eq("id", id);
+  indexPoLater(sb, id);   // knowledge base for Ask AI; runs after the response, never blocks approval
   await notify(sb, "finance", `New PO approved: ${h.po_number}`, `${h.client_name} · ${pn} · ₹${Math.round(Number(h.total_value)).toLocaleString("en-IN")}. First-stage invoice may be due on confirmation.`, "finance", String(id));
   return { ok: true, status: "approved", project_number: pn, merged, excel: "Call tracker_rows_for_excel with this po_id to get rows for the master tracker workbook." };
 }

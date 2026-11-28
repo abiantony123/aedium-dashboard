@@ -13,6 +13,7 @@ import { forecast } from "@/lib/forecast";
 import { decideLeakage, refreshLeakage } from "@/lib/leakage";
 import { raiseInvoice as raiseInv, recordPayment as recordPay, markNotificationsRead } from "@/lib/finance";
 import { decideCodeCompliance, logProjectEmail } from "@/lib/compliance";
+import { departmentsFor } from "@/lib/kb";
 
 type Result = { ok: true; message: string } | { ok: false; message: string };
 
@@ -181,6 +182,23 @@ export async function poFileUrl(inboxId: number) {
     const { data, error } = await sb.storage.from("po-files").createSignedUrl(row.file_path, 300);
     if (error) throw new Error(error.message);
     return { ok: true as const, url: data.signedUrl };
+  } catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "No file." }; }
+}
+
+// A cited knowledge-base document: a short-lived link to its PDF (or its OneDrive page), only for roles that may read it.
+export async function kbSourceUrl(documentId: number) {
+  try {
+    const { sb, actor } = await me(); assertCan(actor.role, "data.read");
+    const { data: doc } = await sb.from("kb_documents").select("departments,file_path,source_url,sensitivity").eq("id", documentId).single();
+    const allowed: string[] = departmentsFor(actor.role);
+    if (!doc || doc.sensitivity === "nda" || !(doc.departments as string[]).some((d) => allowed.includes(d))) return { ok: false as const, message: "You cannot open this document." };
+    if (doc.file_path) {
+      const { data, error } = await sb.storage.from("po-files").createSignedUrl(doc.file_path, 300);
+      if (error) throw new Error(error.message);
+      return { ok: true as const, url: data.signedUrl };
+    }
+    if (doc.source_url) return { ok: true as const, url: doc.source_url as string };
+    return { ok: false as const, message: "This passage comes from the PO record; no file is stored for it." };
   } catch (e) { return { ok: false as const, message: e instanceof Error ? e.message : "No file." }; }
 }
 
