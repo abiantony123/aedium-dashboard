@@ -28,6 +28,7 @@ import Bell from "./bell";
 
 type Tab = TabName;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const shortDay = (iso: string | null) => iso ? new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" }) : "none yet";
 
 type Draft = { to: string; subject: string; body: string };
 type Props = {
@@ -648,8 +649,12 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
               <div className="srow"><span>Invoices raised</span><span className="vchip">{d.since.invoices}</span></div>
               <div className="srow"><span>Stages completed</span><span className="vchip">{d.since.stages}</span></div>
               <div className="srow"><span>Receipts recorded</span><span className="vchip">{inr(d.since.receipts)}</span></div>
-              <div className="srow"><span>Contracts near expiry</span><span className="vchip">{d.since.expiring}</span></div>
+              <div className="srow"><span>{d.period.custom ? "Contracts ending" : "Contracts ending in 60 days"}</span><span className="vchip">{d.since.expiring}</span></div>
+              {!d.period.custom && <div className="srow"><span>Contracts lapsed, still unbilled</span><span className="vchip">{d.since.lapsed}</span></div>}
             </div>
+            {!d.period.custom && (
+              <div className="src">Last invoice {shortDay(d.since.last.invoice)} · last receipt {shortDay(d.since.last.receipt)} · last stage completed {shortDay(d.since.last.stage)}</div>
+            )}
           </section>
         </div>
         <div className="a-row2">

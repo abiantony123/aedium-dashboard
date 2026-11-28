@@ -389,17 +389,29 @@ export function build(r: Raw, range: Range | null = null) {
   }
 
   // ---- recent activity ----
+  // "Since yesterday" runs on the real clock (IST), not the report month; `last` says when each feed last moved,
+  // so an all-zero card reads as "quiet" rather than "broken".
   const dayAgo = new Date(Date.now() - 86400000).toISOString();
+  const yday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date(Date.now() - 86400000));
+  const maxOf = (xs: (string | null | undefined)[]) => xs.filter((x): x is string => !!x).sort().at(-1) ?? null;
+  const last = {
+    invoice: maxOf(r.invoices.map((i) => i.date)),
+    receipt: maxOf(r.payments.map((p) => p.date)),
+    stage: maxOf(r.events.filter((e) => e.event === "complete").map((e) => e.created_at?.slice(0, 10))),
+  };
   const since = custom ? {
     invoices: r.invoices.filter((i) => inP(i.date)).length,
     stages: r.events.filter((e) => e.event === "complete" && inP(e.created_at)).length,
     receipts: collectedMonth,
     expiring: active.filter((l) => inP(l.end_date) && (l.yet_to_bill_amount ?? 0) > 0).length,
+    lapsed: 0, last,
   } : {
-    invoices: r.invoices.filter((i) => i.date >= dayAgo.slice(0, 10)).length,
+    invoices: r.invoices.filter((i) => i.date >= yday).length,
     stages: r.events.filter((e) => e.event === "complete" && e.created_at >= dayAgo).length,
-    receipts: sum(r.payments.filter((p) => p.date >= dayAgo.slice(0, 10)), (p) => p.amount),
-    expiring: expiring.filter((l) => l.days >= 0).length,
+    receipts: sum(r.payments.filter((p) => p.date >= yday), (p) => p.amount),
+    expiring: expiring.filter((l) => l.days >= 0).length,                 // ending in the next 60 days
+    lapsed: expiring.filter((l) => l.days < 0).length,                   // ended in the last 6 months, still unbilled
+    last,
   };
 
   // ---- agent queue (one card per agent, skipping what someone already decided) ----
