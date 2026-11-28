@@ -49,7 +49,7 @@ Read subject, sender, body and attachment names.
 - Read the PDF attachment page by page. Stage tables are often in "Specific Terms", "Payment Terms" or an **annexure**, sometimes one table per discipline.
 - Values in INR **excluding GST**; percentages as 0–1. Copy stage text as printed.
 - Map discipline names to tracker studio names (e.g. "Landscape Design Services" → `Landscape`, "Interior Design" → `Interior`). If no studio name fits, use the closest and say so in `notes`.
-- Set `source` to `"mailbox"` and `source_ref` to the Outlook message id.
+- Set `source` to `"outlook"` and `source_ref` to the Outlook message id.
 
 ### 5. Match to a project (before staging)
 - `list_pos` / search for the same **PO number** → it is an amendment of that PO.
