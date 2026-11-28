@@ -647,7 +647,8 @@ export default function Dashboard({ data: d, email, role, roleStudio, tabs, orig
             <h2>{d.period.custom ? "In this period" : "Since yesterday"}</h2>
             <div className="rows">
               <div className="srow"><span>Invoices raised</span><span className="vchip">{d.since.invoices}</span></div>
-              <div className="srow"><span>Stages completed</span><span className="vchip">{d.since.stages}</span></div>
+              <div className="srow"><span>Stages marked complete</span><span className="vchip">{d.since.stages}</span></div>
+              <div className="srow" title="Live queue, not date-filtered: tracker stages marked Completed that have no invoice yet (same as the AI brief)"><span>Completed, not invoiced</span><span className="vchip">{d.queues.invoice_trigger.length}{d.queues.invoice_trigger.length ? ` · ${inr(d.queues.invoice_trigger.reduce((a, s) => a + (s.fee ?? 0), 0))}` : ""}</span></div>
               <div className="srow"><span>Receipts recorded</span><span className="vchip">{inr(d.since.receipts)}</span></div>
               <div className="srow"><span>{d.period.custom ? "Contracts ending" : "Contracts ending in 60 days"}</span><span className="vchip">{d.since.expiring}</span></div>
               {!d.period.custom && <div className="srow"><span>Contracts lapsed, still unbilled</span><span className="vchip">{d.since.lapsed}</span></div>}
